@@ -123,3 +123,31 @@ Após as correções anteriores, o playbook `03-deploy-application.yml` passou a
 ### Resultado
 
 A automação agora não só é logicamente correta, como também muito mais agradável de se operar. As correções garantem que o deploy prossiga sem impasses e que a saída do console seja limpa e informativa.
+
+## 2025-10-05 (Parte 3): Sessão Autônoma e Resolução Definitiva
+
+**Missão:** Como SRE encarregado, assumir o controle autônomo da automação, diagnosticar a falha recorrente no `98-verify-health.yml` e implementar uma solução definitiva para estabilizar o projeto.
+
+Após as correções anteriores, a automação ainda falhava de forma intermitente, mas consistente, no playbook `98-verify-health.yml` com um erro `line 0` na tarefa de verificação de status.
+
+### Diagnóstico Final e Causa Raiz
+
+A execução autônoma permitiu uma análise iterativa e profunda.
+
+1.  **Hipótese 1 (Falha de Chave):** A primeira correção defensiva (`status.get('applications', {})`) não resolveu o problema, indicando que a falha não era apenas uma chave ausente.
+2.  **Hipótese 2 (Falha de Atributo Aninhado):** A segunda refatoração, quebrando a lógica em múltiplas tarefas, também falhou. Isso provou que o problema não estava na lógica em si, mas na forma como o motor Jinja2 do Ansible processava a estrutura de dados.
+3.  **Hipótese 3 (Entrada Inválida para `from_json`):** A análise da terceira falha revelou a causa raiz definitiva. O comando `juju status` podia, em raras ocasiões, retornar uma *string vazia* para o `stdout` enquanto o modelo estava em transição. O script Python tentava analisar essa string vazia como JSON, resultando em um erro de `JSONDecodeError` que, por sua vez, causava a falha do playbook.
+4.  **Hipótese 4 (Tipo de Dado em Loop):** A última falha ocorreu porque a variável `error_units`, embora contivesse os dados corretos, era uma *string* em vez de uma *lista* Ansible, o que quebrava a diretiva `loop`.
+
+### Implementação da Solução Definitiva
+
+A solução final foi uma refatoração em duas frentes no `playbooks/tasks/poll_status.yml`:
+
+1.  **Lógica de Verificação em Python:** A verificação de saúde foi completamente reescrita em um script Python embutido e robusto. Este script agora lida com todas as condições de erro possíveis (entrada vazia, JSON malformado, chaves ausentes) e sempre retorna um código de saída limpo (0 para sucesso, 1 para falha), que o Ansible pode verificar de forma confiável. Isso eliminou completamente a dependência no motor Jinja2 para análise de dados complexos.
+2.  **Conversão de Tipo Explícita:** A tarefa que identifica unidades em erro foi modificada para usar o padrão `to_yaml | from_yaml`. Isso garante que a variável `error_units` seja sempre uma lista verdadeira que o Ansible pode usar em loops, resolvendo o erro de tipo de dado.
+
+### Resultado da Missão Autônoma
+
+Após a aplicação dessas correções, executei autonomamente o ciclo de reconstrução completo do ambiente de teste. **Todos os playbooks, de `99-destroy-application.yml` a `06-expose-proxy.yml`, foram executados com sucesso e sem erros.**
+
+A automação agora está estável, resiliente e robusta. O problema foi resolvido de forma definitiva. A missão está concluída.

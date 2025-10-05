@@ -7,38 +7,51 @@
   changed_when: false
   ignore_errors: true
 
-- name: Parse status and identify issues
+- name: Safely parse Juju status JSON
+  ansible.builtin.set_fact:
+    juju_status_data: "{{ juju_status_json.stdout | from_json }}"
+  register: parse_result
+  failed_when: false
   when: juju_status_json.stdout is defined and juju_status_json.stdout != ""
+
+- name: Parse status and identify issues
+  when: parse_result is succeeded and juju_status_data is defined
   block:
-    - name: Check if model exists and all units are active/idle
+    - name: "Check cluster health with a robust Python script"
+      ansible.builtin.command:
+        cmd: "python3 -c '\nimport json, sys;\n# If stdin is empty, exit with 1 (not healthy)\nstdin_content = sys.stdin.read();\nif not stdin_content: sys.exit(1);\ntry:\n    status = json.loads(stdin_content);\n    apps = status.get(\"applications\", {});\n    if not apps: sys.exit(1);\n    units = [];\n    for app in apps.values():\n        app_units = app.get(\"units\");\n        if app_units: units.extend(app_units.values());\n    if not units: sys.exit(1);\n    for unit in units:\n        if unit.get(\"workload-status\", {}).get(\"current\") != \"active\": sys.exit(1);\n        if unit.get(\"juju-status\", {}).get(\"current\") != \"idle\": sys.exit(1);\n    sys.exit(0);\nexcept Exception:\n    sys.exit(1);\n        '"
+        stdin: "{{ juju_status_json.stdout }}"
+      register: health_check_result
+      changed_when: false
+      failed_when: false
+
+    - name: "Set completion fact based on Python script result"
       ansible.builtin.set_fact:
-        all_apps_active: >-
-          {% set units = (juju_status_json.stdout | from_json).applications.values() | map(attribute='units') | select('defined') | map('values') | list | flatten %}
-          {{
-            not juju_status_json.failed and
-            units | length > 0 and
-            (units | map(attribute='workload-status.current') | unique == ['active']) and
-            (units | map(attribute='juju-status.current') | unique == ['idle'])
-          }}
+        all_apps_active: "{{ health_check_result.rc == 0 }}"
 
     - name: Identify units in error state
       ansible.builtin.set_fact:
-        error_units: >-
+        error_units: "{{ error_units_as_string | from_yaml }}"
+      vars:
+        error_units_as_string: |
           {% set units = [] %}
-          {% for app_name, app_data in (juju_status_json.stdout | from_json).applications.items() %}
+          {% set status = juju_status_json.stdout | from_json %}
+          {% set apps = status.get('applications', {}) %}
+          {% for app_name, app_data in apps.items() %}
             {% if app_data.units is defined %}
               {% for unit_name, unit_data in app_data.units.items() %}
-                {% if unit_data['workload-status']['current'] == 'error' %}
+                {% if unit_data.get('workload-status', {}).get('current', '') == 'error' %}
                   {% set _ = units.append({
                     'name': unit_name, 
-                    'message': unit_data['workload-status']['message'],
+                    'message': unit_data.get('workload-status', {}).get('message', ''),
                     'app': app_name
                   }) %}
                 {% endif %}
               {% endfor %}
             {% endif %}
           {% endfor %}
-          {{ units }}
+          {{ units | to_yaml }}
+      when: not (health_check_result.rc == 0)
 
 - name: Attempt to resolve units in error state
   when: 
