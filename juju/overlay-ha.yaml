@@ -1,0 +1,28 @@
+# juju/overlay-ha.yaml
+#
+# Overlay para transformar o bundle base em uma implantação de alta disponibilidade (PRODUÇÃO).
+# Contém APENAS as modificações necessárias.
+
+applications:
+  landscape-server:
+    scale: 2
+    # Opções específicas de HA podem ser adicionadas aqui
+
+  rabbitmq-server:
+    scale: 2
+
+  haproxy:
+    scale: 2
+
+  # Remove a aplicação PostgreSQL, pois em produção usamos um serviço externo (DBaaS).
+  # A sintaxe de um mapa vazio remove a aplicação do bundle final.
+  postgresql: {}
+
+relations:
+  # Adiciona a relação de cluster para as aplicações que precisam de HA
+  - - "landscape-server:hacluster"
+    - "landscape-server:hacluster"
+  - - "rabbitmq-server:hacluster"
+    - "rabbitmq-server:hacluster"
+  - - "haproxy:hacluster"
+    - "haproxy:hacluster"

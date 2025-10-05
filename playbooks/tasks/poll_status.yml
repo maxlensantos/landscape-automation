@@ -1,0 +1,86 @@
+---
+# tasks/poll_status.yml
+
+- name: Check Juju status
+  ansible.builtin.command: sg lxd -c "juju status --format=json"
+  register: juju_status_json
+  changed_when: false
+  ignore_errors: true
+
+- name: Parse status and identify issues
+  when: juju_status_json.stdout is defined and juju_status_json.stdout != ""
+  block:
+    - name: Check if model exists and all units are active/idle
+      ansible.builtin.set_fact:
+        all_apps_active: >-
+          {% set units = (juju_status_json.stdout | from_json).applications.values() | map(attribute='units') | select('defined') | map('values') | list | flatten %}
+          {{
+            not juju_status_json.failed and
+            units | length > 0 and
+            (units | map(attribute='workload-status.current') | unique == ['active']) and
+            (units | map(attribute='juju-status.current') | unique == ['idle'])
+          }}
+
+    - name: Identify units in error state
+      ansible.builtin.set_fact:
+        error_units: >-
+          {% set units = [] %}
+          {% for app_name, app_data in (juju_status_json.stdout | from_json).applications.items() %}
+            {% if app_data.units is defined %}
+              {% for unit_name, unit_data in app_data.units.items() %}
+                {% if unit_data['workload-status']['current'] == 'error' %}
+                  {% set _ = units.append({
+                    'name': unit_name, 
+                    'message': unit_data['workload-status']['message'],
+                    'app': app_name
+                  }) %}
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+          {% endfor %}
+          {{ units }}
+
+- name: Attempt to resolve units in error state
+  when: 
+    - not all_apps_active
+    - error_units is defined
+    - error_units | length > 0
+    - retry_num > 30
+    - retry_num is divisibleby 20
+  block:
+    - name: Log error units being resolved
+      ansible.builtin.debug:
+        msg: "Tentando resolver unidade com erro: {{ item.name }} ({{ item.message }})"
+      loop: "{{ error_units }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Resolve HAProxy SSL certificate error specifically
+      ansible.builtin.command: "sg lxd -c 'juju resolved {{ item.name }}'"
+      loop: "{{ error_units }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: "'certificate' in item.message or 'hook failed' in item.message"
+      changed_when: true
+      register: resolve_result
+      failed_when: false
+
+    - name: Wait brief moment after resolve
+      ansible.builtin.pause:
+        seconds: 5
+      when: resolve_result.changed
+
+- name: Display live Juju status
+  when: not all_apps_active
+  ansible.builtin.debug:
+    msg: |
+      ######################################################################
+      #  AGUARDANDO CLUSTER (TENTATIVA {{ retry_num }}/{{ max_iterations }}) - Timeout em ~{{ ((max_iterations - retry_num) * 5 / 60) | round }} min  #
+      ######################################################################
+
+      {{ juju_status_json.stdout }}
+
+- name: Pause for 5 seconds between checks
+  when: not all_apps_active
+  ansible.builtin.pause:
+    seconds: 5

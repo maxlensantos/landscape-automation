@@ -1,0 +1,34 @@
+# juju/bundle-base.yaml
+#
+# Bundle base para uma implantação de nó único (ambiente de TESTE).
+# Inclui todos os serviços necessários para rodar de forma autocontida.
+
+series: jammy
+
+applications:
+  landscape-server:
+    charm: ch:landscape-server
+    channel: stable
+    scale: 1
+    options:
+
+
+  rabbitmq-server:
+    charm: ch:rabbitmq-server
+    channel: 3.9/stable
+    scale: 1
+
+  postgresql:
+    charm: ch:postgresql
+    channel: 14/stable
+    scale: 1
+
+  haproxy:
+    charm: ch:haproxy
+    channel: beta
+    scale: 1
+
+relations:
+  - ["landscape-server:db", "postgresql:db"]
+  - ["landscape-server", "rabbitmq-server"]
+  - ["haproxy", "landscape-server"]

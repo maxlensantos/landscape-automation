@@ -1,0 +1,13 @@
+# vars/main.yml
+#
+# Contém variáveis não sensíveis que podem ser compartilhadas e versionadas.
+# Exemplo: versões de pacotes, nomes de usuários, caminhos de diretório, etc.
+
+# Versão do Landscape a ser instalada
+landscape_version: "23.03"
+
+# Nome do usuário de serviço
+service_user: landscape
+
+# Repositório APT (se houver um interno)
+# apt_repository_url: "http://apt.internal.corp/ubuntu"

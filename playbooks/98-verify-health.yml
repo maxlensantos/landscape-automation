@@ -1,0 +1,92 @@
+---
+- name: Verify Juju Model Health and Provide Next Steps
+  hosts: all
+  gather_facts: no
+  connection: local
+
+  vars:
+    spinner_chars: ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏']
+    max_iterations: 720  # 60 minutos (720 * 5 segundos)
+
+  tasks:
+    - name: Initialize completion fact
+      ansible.builtin.set_fact:
+        all_apps_active: false
+
+    - name: Wait for applications to become active (with spinner UX)
+      ansible.builtin.include_tasks: tasks/poll_status.yml
+      loop: "{{ range(0, max_iterations) | list }}"
+      loop_control:
+        loop_var: retry_num
+      when: not all_apps_active
+
+    - name: Handle case where model does not exist
+      when: >
+        juju_status_json.failed and
+        ('not found' in juju_status_json.stderr or 'no models' in juju_status_json.stderr)
+      block:
+        - name: Display "No Environment Found" message
+          ansible.builtin.debug:
+            msg: |
+              ######################################################################
+              #                   AMBIENTE NÃO ENCONTRADO                          #
+              ######################################################################
+              Parece que o ambiente já foi destruído ou ainda não foi criado.
+
+        - ansible.builtin.meta: end_play
+
+    - name: Display SUCCESS and Next Steps
+      when: all_apps_active
+      block:
+        - name: Get HAProxy IP Address
+          ansible.builtin.set_fact:
+            haproxy_ip: "{{ ((juju_status_json.stdout | from_json).applications.haproxy.units['haproxy/0'])['public-address'] }}"
+
+        - name: Display Final Instructions
+          ansible.builtin.debug:
+            msg: |
+              ######################################################################
+              #      IMPLANTAÇÃO CONCLUÍDA COM SUCESSO!                            #
+              ######################################################################
+
+              O ambiente do Landscape está pronto.
+
+              PRÓXIMOS PASSOS:
+              1. Abra um navegador e acesse a URL: https://{{ haproxy_ip }}/
+
+              2. Você verá um aviso de segurança sobre o certificado. Isso é
+                 ESPERADO, pois usamos um certificado autoassinado. Aceite o
+                 risco e continue para o site.
+
+              3. Siga as instruções no portal do Landscape para criar o
+                 primeiro administrador e registrar seus servidores.
+
+              ######################################################################
+
+    - name: Display HUMANIZED "Still Waiting" Message
+      when: not all_apps_active
+      block:
+        - name: Generate a summary of non-active applications
+          ansible.builtin.set_fact:
+            problem_summary: "{{ problem_summary | default([]) + [ 'App ' + item.key + ' esta ' + item.value.get('application-status', {}).get('current', 'desconhecido') ] }}"
+          loop: "{{ (juju_status_json.stdout | from_json).applications | dict2items }}"
+          when:
+            - item.value.get('application-status', {}).get('current', 'desconhecido') != 'active'
+            - item.value.units is defined
+            - item.value.units | length > 0
+
+        - name: Display the human-readable summary
+          ansible.builtin.debug:
+            msg: |
+              ######################################################################
+              #      A IMPLANTAÇÃO NÃO FOI CONCLUÍDA COM SUCESSO.                #
+              ######################################################################
+
+              Ocorreu um timeout enquanto aguardava as aplicações ficarem ativas.
+              Resumo dos problemas no momento do timeout:
+
+              {% for item in problem_summary %}
+              - {{ item }}
+              {% endfor %}
+
+              Aguarde mais alguns minutos ou investigue os problemas apontados.

@@ -1,0 +1,45 @@
+---
+- name: Expose HAProxy to the Host Machine
+  hosts: all
+  gather_facts: no
+  connection: local
+  become: true # lxc commands need sudo
+
+  tasks:
+    - name: "Get Juju status to find HAProxy details"
+      ansible.builtin.command: sg lxd -c "juju status --format=json"
+      register: juju_status_json
+      changed_when: false
+      become: false # juju commands run as user
+
+    - name: "Set HAProxy facts"
+      ansible.builtin.set_fact:
+        haproxy_unit: "{{ (juju_status_json.stdout | from_json).applications.haproxy.units['haproxy/0'] }}"
+        haproxy_machine_id: "{{ ((juju_status_json.stdout | from_json).applications.haproxy.units['haproxy/0']).machine }}"
+        haproxy_container_ip: "{{ ((juju_status_json.stdout | from_json).applications.haproxy.units['haproxy/0'])['public-address'] }}"
+
+    - name: "Set HAProxy container name fact"
+      ansible.builtin.set_fact:
+        haproxy_container_name: "{{ ((juju_status_json.stdout | from_json).machines[haproxy_machine_id]).hostname }}"
+      when: haproxy_machine_id is defined
+
+    - name: "Redirecionar porta 80 do host para o container HAProxy"
+      ansible.builtin.command:
+        cmd: "lxc config device add {{ haproxy_container_name }} http-proxy proxy listen=tcp:0.0.0.0:80 connect=tcp:{{ haproxy_container_ip }}:80"
+      register: proxy_add_80
+      failed_when: "proxy_add_80.rc != 0 and 'already exists' not in proxy_add_80.stderr"
+      changed_when: "'already exists' not in proxy_add_80.stderr"
+      when: haproxy_container_name is defined
+
+    - name: "Redirecionar porta 443 do host para o container HAProxy"
+      ansible.builtin.command:
+        cmd: "lxc config device add {{ haproxy_container_name }} https-proxy proxy listen=tcp:0.0.0.0:443 connect=tcp:{{ haproxy_container_ip }}:443"
+      register: proxy_add_443
+      failed_when: "proxy_add_443.rc != 0 and 'already exists' not in proxy_add_443.stderr"
+      changed_when: "'already exists' not in proxy_add_443.stderr"
+      when: haproxy_container_name is defined
+
+    - name: "Display final access instructions"
+      ansible.builtin.debug:
+        msg: "Portas 80 e 443 foram redirecionadas. Acesse o Landscape usando o IP da sua VM Multipass."
+      when: proxy_add_443.changed or proxy_add_80.changed or "'already exists' in proxy_add_443.stderr"

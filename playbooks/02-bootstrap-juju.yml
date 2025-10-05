@@ -1,0 +1,45 @@
+---
+- name: Install Juju Client and Bootstrap Controller
+  hosts: all
+  gather_facts: yes
+
+  tasks:
+    - name: Install Juju client from snap
+      ansible.builtin.snap:
+        name: juju
+        classic: yes
+      become: yes
+
+    - name: Check for existing juju controllers
+      ansible.builtin.command: sg lxd -c "juju controllers"
+      register: juju_controllers_result
+      changed_when: false
+      become: no
+      # This task is expected to fail if no controller exists. We treat that as a success.
+      failed_when: "juju_controllers_result.rc != 0 and 'No controllers registered' not in juju_controllers_result.stderr"
+
+    # --- Bootstrap para Ambiente de Teste ---
+    - name: Bootstrap Juju on localhost for testing
+      ansible.builtin.command: "sg lxd -c 'juju bootstrap localhost {{ controller_name }}'"
+      when:
+        - not (is_ha_cluster | bool)
+        - "controller_name not in juju_controllers_result.stdout"
+      changed_when: true
+      become: no
+
+    # --- Bootstrap para Ambiente de Produção (HA) ---
+    - name: Bootstrap Juju on the first production node
+      ansible.builtin.command: "sg lxd -c 'juju bootstrap localhost {{ controller_name }}'"
+      when:
+        - is_ha_cluster | bool
+        - inventory_hostname == groups['landscape_vms'][0]
+        - "controller_name not in juju_controllers_result.stdout"
+      changed_when: true
+      become: no
+
+    - name: Inform other production nodes
+      ansible.builtin.debug:
+        msg: "Este nó não é o primário. Aguardando o bootstrap do controller no nó '{{ groups['landscape_vms'][0] }}'."
+      when:
+        - is_ha_cluster | bool
+        - inventory_hostname != groups['landscape_vms'][0]

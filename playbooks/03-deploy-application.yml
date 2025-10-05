@@ -1,0 +1,136 @@
+---
+- name: Deploy Canonical Landscape Application (Sequential Strategy)
+  hosts: all
+  become: no # Juju commands run as the user
+  gather_facts: no
+
+  vars:
+    overlay_path: "{{ playbook_dir }}/../landscape_overlay.yaml"
+    cert_path: "/tmp/landscape_cert.pem"
+    key_path: "/tmp/landscape_key.pem"
+    cert_cn: "{{ domain_name | default('landscape.test.local') }}"
+
+  tasks:
+    - name: Generate a self-signed certificate and private key
+      ansible.builtin.command:
+        cmd: >
+          openssl req -new -x509 -nodes -days 365
+          -subj "/CN={{ cert_cn }}"
+          -out "{{ cert_path }}"
+          -keyout "{{ key_path }}"
+      args:
+        creates: "{{ cert_path }}"
+
+    - name: Read and b64encode certificate
+      ansible.builtin.set_fact:
+        cert_content_b64: "{{ (lookup('file', cert_path) + '\n') | b64encode }}"
+
+    - name: Read and b64encode private key
+      ansible.builtin.set_fact:
+        key_content_b64: "{{ lookup('file', key_path) | b64encode }}"
+
+    - name: Create Juju overlay file for SSL
+      ansible.builtin.copy:
+        dest: "{{ overlay_path }}"
+        content: |
+          applications:
+            haproxy:
+              options:
+                ssl_cert: {{ cert_content_b64 }}
+                ssl_key: {{ key_content_b64 }}
+
+    - name: Check for available models
+      ansible.builtin.command: sg lxd -c "juju models --format=json"
+      register: juju_models_json
+      changed_when: false
+      become: no
+      ignore_errors: true
+
+    - name: Set list of model names
+      ansible.builtin.set_fact:
+        model_names: "{{ (juju_models_json.stdout | from_json).models | map(attribute='name') | list }}"
+      when: juju_models_json.stdout != ""
+
+    - name: Add a model for the landscape application
+      ansible.builtin.command: "sg lxd -c 'juju add-model {{ model_name }}'"
+      when: model_name not in model_names
+      changed_when: true
+      become: no
+
+    # --- SEQUENTIAL DEPLOYMENT BLOCK FOR SINGLE-NODE (TESTING) ---
+    - name: Execute Sequential Deployment for Test Environment
+      when: not (is_ha_cluster | bool)
+      block:
+        - name: "[1/7] Deploy postgresql"
+          ansible.builtin.command: "sg lxd -c 'juju deploy -m {{ model_name }} postgresql --channel=14/stable'"
+          changed_when: true
+
+        - name: "[1/7] Wait for postgresql to be active"
+          ansible.builtin.command: "sg lxd -c 'juju status -m {{ model_name }} postgresql --format=json'"
+          register: status_result
+          until: "(status_result.stdout | from_json)['applications']['postgresql']['application-status']['current'] == 'active'"
+          retries: 120 # 10 minutes
+          delay: 5
+          changed_when: false
+
+        - name: "[2/7] Deploy rabbitmq-server"
+          ansible.builtin.command: "sg lxd -c 'juju deploy -m {{ model_name }} rabbitmq-server --channel=3.9/stable'"
+          changed_when: true
+
+        - name: "[2/7] Wait for rabbitmq-server to be active"
+          ansible.builtin.command: "sg lxd -c 'juju status -m {{ model_name }} rabbitmq-server --format=json'"
+          register: status_result
+          until: "(status_result.stdout | from_json)['applications']['rabbitmq-server']['application-status']['current'] == 'active'"
+          retries: 120 # 10 minutes
+          delay: 5
+          changed_when: false
+
+        - name: "[3/7] Deploy haproxy"
+          ansible.builtin.command: "sg lxd -c 'juju deploy -m {{ model_name }} haproxy --channel=beta'"
+          changed_when: true
+
+        - name: "[3/7] Configure haproxy SSL"
+          ansible.builtin.command: "sg lxd -c 'juju config -m {{ model_name }} haproxy ssl_cert={{ cert_content_b64 }} ssl_key={{ key_content_b64 }}'"
+          changed_when: true
+
+        - name: "[3/7] Wait for haproxy to be active"
+          ansible.builtin.command: "sg lxd -c 'juju status -m {{ model_name }} haproxy --format=json'"
+          register: status_result
+          until: "(status_result.stdout | from_json)['applications']['haproxy']['application-status']['current'] == 'active'"
+          retries: 120 # 10 minutes
+          delay: 5
+          changed_when: false
+
+        - name: "[4/7] Deploy landscape-server"
+          ansible.builtin.command: "sg lxd -c 'juju deploy -m {{ model_name }} landscape-server --channel=stable'"
+          changed_when: true
+
+        - name: "[4/7] Wait for landscape-server to be active"
+          ansible.builtin.command: "sg lxd -c 'juju status -m {{ model_name }} landscape-server --format=json'"
+          register: status_result
+          until: "(status_result.stdout | from_json)['applications']['landscape-server']['application-status']['current'] == 'active'"
+          retries: 120 # 10 minutes
+          delay: 5
+          changed_when: false
+
+        - name: "[5/7] Relate landscape-server to postgresql"
+          ansible.builtin.command: "sg lxd -c 'juju relate -m {{ model_name }} landscape-server:db postgresql:db'"
+          changed_when: true
+
+        - name: "[6/7] Relate landscape-server to rabbitmq-server"
+          ansible.builtin.command: "sg lxd -c 'juju relate -m {{ model_name }} landscape-server rabbitmq-server'"
+          changed_when: true
+
+        - name: "[7/7] Relate landscape-server to haproxy"
+          ansible.builtin.command: "sg lxd -c 'juju relate -m {{ model_name }} landscape-server haproxy'"
+          changed_when: true
+
+    # --- BLOCK FOR HA (PRODUCTION) - Not refactored, will be skipped ---
+    - name: Deploy for HA Cluster (Production Environment)
+      ansible.builtin.command:
+        cmd: "sg lxd -c 'juju deploy -m {{ model_name }} ./juju/bundle-base.yaml --overlay ./juju/overlay-ha.yaml --overlay {{ overlay_path }}'"
+      args:
+        chdir: /home/ubuntu/projetos/landscape-automation
+      when: is_ha_cluster | bool
+      register: juju_deploy_ha_result
+      changed_when: "'Deploying' in juju_deploy_ha_result.stdout"

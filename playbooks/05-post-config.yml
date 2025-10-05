@@ -1,0 +1,38 @@
+---
+- name: Post-Configuration Tasks
+  hosts: all
+  gather_facts: no
+  connection: local # Run all tasks on the control machine
+
+  vars:
+    cert_path: "/tmp/landscape_cert.pem"
+    key_path: "/tmp/landscape_key.pem"
+    # O CN do certificado agora pode ser diferente para teste e produção
+    # Usamos o 'domain_name' do inventário se existir, senão um padrão de teste.
+    cert_cn: "{{ domain_name | default('landscape.test.local') }}"
+
+  tasks:
+    - name: Generate a self-signed certificate and private key
+      ansible.builtin.command:
+        cmd: >
+          openssl req -new -x509 -nodes -days 365
+          -subj "/CN={{ cert_cn }}"
+          -out "{{ cert_path }}"
+          -keyout "{{ key_path }}"
+      args:
+        creates: "{{ cert_path }}" # Makes the task idempotent
+
+    - name: Read the certificate content
+      ansible.builtin.set_fact:
+        cert_content: "{{ lookup('file', cert_path) }}"
+
+    - name: Read the private key content
+      ansible.builtin.set_fact:
+        key_content: "{{ lookup('file', key_path) }}"
+
+    - name: Configure HAProxy with the certificate and key
+      ansible.builtin.command:
+        cmd: >
+          sg lxd -c "juju config haproxy
+          ssl_cert={{ cert_content | b64encode }}
+          ssl_key={{ key_content | b64encode }}"

@@ -1,0 +1,76 @@
+---
+- name: Destroy Juju Model and Controller
+  hosts: all
+  gather_facts: no
+  connection: local
+
+  tasks:
+    - name: "Forcefully kill the Juju controller"
+      ansible.builtin.command: "sg lxd -c 'juju kill-controller {{ controller_name }} --no-prompt'"
+      register: kill_result
+      failed_when: "kill_result.rc != 0 and 'not found' not in kill_result.stderr"
+      changed_when: "'destroyed' in kill_result.stdout"
+      become: no
+      ignore_errors: true # Ignore if controller doesn't exist
+
+    - name: "List all LXD containers"
+      ansible.builtin.command: "lxc list --format=json"
+      register: lxc_list_json
+      changed_when: false
+      become: true
+      ignore_errors: true
+
+    - name: "Forcefully remove any remaining Juju containers"
+      ansible.builtin.command: "lxc delete --force {{ item.name }}"
+      loop: "{{ (lxc_list_json.stdout | from_json) | selectattr('name', 'match', '^juju-') }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: "(lxc_list_json.stdout | from_json) is iterable and lxc_list_json.stdout != ''"
+      changed_when: true
+      become: true
+
+    - name: "Ensure local Juju cache is removed"
+      ansible.builtin.file:
+        path: "{{ lookup('env', 'HOME') }}/.local/share/juju"
+        state: absent
+      become: no
+
+    - name: Check for available models
+      ansible.builtin.command: sg lxd -c "juju models --format=json"
+      register: juju_models_json
+      changed_when: false
+      become: no
+      # This task is expected to fail if no controller exists. We treat that as a success.
+      failed_when: "juju_models_json.rc != 0 and 'No controllers registered' not in juju_models_json.stderr"
+
+    - name: Set list of model names
+      ansible.builtin.set_fact:
+        model_names: "{{ ((juju_models_json.stdout | from_json).models | map(attribute='name') | list) if 'models' in (juju_models_json.stdout | from_json) else [] }}"
+      when: juju_models_json.stdout is defined and juju_models_json.stdout != ""
+
+    - name: Inform that the model is already destroyed
+      ansible.builtin.debug:
+        msg: "Ambiente '{{ model_name }}' não encontrado. Nenhuma ação é necessária."
+      when: model_name not in model_names
+
+    - name: Destroy the Juju model
+      when: model_name in model_names
+      block:
+        - name: Display destruction message
+          ansible.builtin.debug:
+            msg: "Iniciando a destruição do Cluster '{{ model_name }}'. Isso pode levar alguns minutos..."
+
+        - name: Execute destruction command
+          ansible.builtin.command: "sg lxd -c 'juju destroy-model {{ model_name }} --no-prompt --force --destroy-storage'"
+          changed_when: true
+          become: no
+
+        - name: Wait for model to be fully destroyed
+          ansible.builtin.command: sg lxd -c "juju models"
+          register: juju_models_after_destroy
+          until: "model_name not in juju_models_after_destroy.stdout"
+          retries: 30 # 30 retries * 10s delay = 5 minutes timeout
+          delay: 10
+          changed_when: false
+          become: no
+          ignore_errors: true # The command will fail if the controller is gone, which is ok.
