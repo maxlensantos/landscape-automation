@@ -66,11 +66,7 @@
           changed_when: true
 
         - name: "[1/7] Wait for postgresql to be active"
-          ansible.builtin.command: "sg lxd -c 'juju status -m {{ model_name }} postgresql --format=json'"
-          register: status_result
-          until: "(status_result.stdout | from_json)['applications']['postgresql']['application-status']['current'] == 'active'"
-          retries: 120 # 10 minutes
-          delay: 5
+          ansible.builtin.command: "sg lxd -c 'juju wait-for application -m {{ model_name }} postgresql --timeout=10m'"
           changed_when: false
 
         - name: "[2/7] Deploy rabbitmq-server"
@@ -78,11 +74,7 @@
           changed_when: true
 
         - name: "[2/7] Wait for rabbitmq-server to be active"
-          ansible.builtin.command: "sg lxd -c 'juju status -m {{ model_name }} rabbitmq-server --format=json'"
-          register: status_result
-          until: "(status_result.stdout | from_json)['applications']['rabbitmq-server']['application-status']['current'] == 'active'"
-          retries: 120 # 10 minutes
-          delay: 5
+          ansible.builtin.command: "sg lxd -c 'juju wait-for application -m {{ model_name }} rabbitmq-server --timeout=10m'"
           changed_when: false
 
         - name: "[3/7] Deploy haproxy"
@@ -94,24 +86,12 @@
           changed_when: true
 
         - name: "[3/7] Wait for haproxy to be active"
-          ansible.builtin.command: "sg lxd -c 'juju status -m {{ model_name }} haproxy --format=json'"
-          register: status_result
-          until: "(status_result.stdout | from_json)['applications']['haproxy']['application-status']['current'] == 'active'"
-          retries: 120 # 10 minutes
-          delay: 5
+          ansible.builtin.command: "sg lxd -c 'juju wait-for application -m {{ model_name }} haproxy --timeout=10m'"
           changed_when: false
 
         - name: "[4/7] Deploy landscape-server"
           ansible.builtin.command: "sg lxd -c 'juju deploy -m {{ model_name }} landscape-server --channel=stable'"
           changed_when: true
-
-        - name: "[4/7] Wait for landscape-server to be active"
-          ansible.builtin.command: "sg lxd -c 'juju status -m {{ model_name }} landscape-server --format=json'"
-          register: status_result
-          until: "(status_result.stdout | from_json)['applications']['landscape-server']['application-status']['current'] == 'active'"
-          retries: 120 # 10 minutes
-          delay: 5
-          changed_when: false
 
         - name: "[5/7] Relate landscape-server to postgresql"
           ansible.builtin.command: "sg lxd -c 'juju relate -m {{ model_name }} landscape-server:db postgresql:db'"
@@ -124,6 +104,10 @@
         - name: "[7/7] Relate landscape-server to haproxy"
           ansible.builtin.command: "sg lxd -c 'juju relate -m {{ model_name }} landscape-server haproxy'"
           changed_when: true
+
+        - name: "Wait for landscape-server to become active"
+          ansible.builtin.command: "sg lxd -c 'juju wait-for application -m {{ model_name }} landscape-server --timeout=10m'"
+          changed_when: false
 
     # --- BLOCK FOR HA (PRODUCTION) - Not refactored, will be skipped ---
     - name: Deploy for HA Cluster (Production Environment)

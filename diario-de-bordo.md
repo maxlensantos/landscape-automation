@@ -99,3 +99,27 @@ Para resolver os problemas, o playbook `03-deploy-application.yml` foi modificad
 ### Resultado
 
 Com essas correções, o fluxo de reconstrução do ambiente de teste foi concluído com sucesso, estabilizando o ciclo de vida da automação para desenvolvimento e validação.
+
+## 2025-10-05 (Parte 2): Correção de Lógica e Melhoria de UX no Deploy
+
+**Missão:** Resolver a falha de timeout do `landscape-server` e melhorar a experiência de usuário durante a espera.
+
+Após as correções anteriores, o playbook `03-deploy-application.yml` passou a falhar em um novo ponto: a espera pelo `landscape-server`, que entrava em timeout.
+
+### Diagnóstico do Problema
+
+- **Erro Apresentado:** A tarefa `Wait for landscape-server to be active` falhava após 10 minutos.
+- **Causa Raiz:** A análise do `juju status` mostrou que o `landscape-server` estava permanentemente no estado `waiting` com a mensagem `Waiting on relations: db, amqp, haproxy`. Isso revelou um **impasse lógico** no playbook: o script esperava o `landscape-server` ficar ativo *antes* de criar as próprias relações que ele necessitava para se tornar ativo.
+
+### Implementação da Solução
+
+1.  **Correção da Ordem Lógica:** A ordem das tarefas no `03-deploy-application.yml` foi corrigida. A tarefa de espera do `landscape-server` foi movida para o final do bloco, *após* a criação de todas as suas relações de dependência (`postgresql`, `rabbitmq-server`, `haproxy`). Isso resolveu o impasse e permitiu que a aplicação ficasse ativa.
+
+2.  **Melhoria de UX na Espera (Humanização da Saída):** Para evitar a poluição visual das mensagens de "FAILED - RETRYING", todas as tarefas de espera baseadas em laços `until` foram substituídas pelo comando `juju wait-for application`. Essa abordagem:
+    *   Delega a lógica de espera para o próprio Juju.
+    *   Produz uma saída limpa no console, onde o Ansible simplesmente aguarda a conclusão da tarefa.
+    *   Melhora drasticamente a experiência do operador, que não é mais inundado com mensagens de erro durante um processo de espera normal.
+
+### Resultado
+
+A automação agora não só é logicamente correta, como também muito mais agradável de se operar. As correções garantem que o deploy prossiga sem impasses e que a saída do console seja limpa e informativa.
