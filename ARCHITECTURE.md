@@ -22,7 +22,7 @@ A premissa fundamental deste projeto é a utilização de um **modelo híbrido**
 
 *   **Juju (O Modelador de Aplicação):** É responsável pelo ciclo de vida da aplicação Landscape.
     *   **Por quê?** O Landscape é uma aplicação complexa e com estado, com múltiplas partes que se relacionam (servidor, banco de dados, mensageria). Juju é a ferramenta da Canonical desenhada especificamente para modelar e gerenciar essas relações complexas de forma robusta.
-    *   A topologia da aplicação é definida de forma declarativa nos arquivos de *bundle* em `juju/`.
+    *   A topologia da aplicação é definida e implantada usando o **bundle oficial `landscape-scalable`** do canal `stable`. A configuração específica do ambiente (como certificados SSL) é aplicada atomicamente no momento do deploy através de um arquivo de **overlay**.
 
 ## 3. Gerenciamento de Ambientes (Teste vs. Produção)
 

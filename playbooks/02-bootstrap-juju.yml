@@ -10,6 +10,29 @@
         classic: yes
       become: yes
 
+    - name: Install LXD from snap
+      ansible.builtin.snap:
+        name: lxd
+      become: yes
+
+    - name: Initialize LXD (if necessary)
+      ansible.builtin.command:
+        cmd: lxd init --auto
+      changed_when: true # The command --auto is safe for re-execution
+      become: yes
+
+    - name: Set LXD default profile to privileged mode
+      ansible.builtin.command:
+        cmd: lxc profile set default security.privileged true
+      changed_when: true
+      become: yes
+
+    - name: Set LXD default profile to allow nesting
+      ansible.builtin.command:
+        cmd: lxc profile set default security.nesting true
+      changed_when: true
+      become: yes
+
     - name: Check for existing juju controllers
       ansible.builtin.command: sg lxd -c "juju controllers"
       register: juju_controllers_result

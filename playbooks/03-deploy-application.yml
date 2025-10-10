@@ -57,57 +57,10 @@
       changed_when: true
       become: no
 
-    # --- SEQUENTIAL DEPLOYMENT BLOCK FOR SINGLE-NODE (TESTING) ---
-    - name: Execute Sequential Deployment for Test Environment
+    - name: Deploy Landscape via official stable bundle
       when: not (is_ha_cluster | bool)
-      block:
-        - name: "[1/7] Deploy postgresql"
-          ansible.builtin.command: "sg lxd -c 'juju deploy -m {{ model_name }} postgresql --channel=14/stable'"
-          changed_when: true
-
-        - name: "[1/7] Wait for postgresql to be active"
-          ansible.builtin.command: "sg lxd -c 'juju wait-for application -m {{ model_name }} postgresql --timeout=10m'"
-          changed_when: false
-
-        - name: "[2/7] Deploy rabbitmq-server"
-          ansible.builtin.command: "sg lxd -c 'juju deploy -m {{ model_name }} rabbitmq-server --channel=3.9/stable'"
-          changed_when: true
-
-        - name: "[2/7] Wait for rabbitmq-server to be active"
-          ansible.builtin.command: "sg lxd -c 'juju wait-for application -m {{ model_name }} rabbitmq-server --timeout=10m'"
-          changed_when: false
-
-        - name: "[3/7] Deploy haproxy"
-          ansible.builtin.command: "sg lxd -c 'juju deploy -m {{ model_name }} haproxy --channel=beta'"
-          changed_when: true
-
-        - name: "[3/7] Configure haproxy SSL"
-          ansible.builtin.command: "sg lxd -c 'juju config -m {{ model_name }} haproxy ssl_cert={{ cert_content_b64 }} ssl_key={{ key_content_b64 }}'"
-          changed_when: true
-
-        - name: "[3/7] Wait for haproxy to be active"
-          ansible.builtin.command: "sg lxd -c 'juju wait-for application -m {{ model_name }} haproxy --timeout=10m'"
-          changed_when: false
-
-        - name: "[4/7] Deploy landscape-server"
-          ansible.builtin.command: "sg lxd -c 'juju deploy -m {{ model_name }} landscape-server --channel=stable'"
-          changed_when: true
-
-        - name: "[5/7] Relate landscape-server to postgresql"
-          ansible.builtin.command: "sg lxd -c 'juju relate -m {{ model_name }} landscape-server:db postgresql:db'"
-          changed_when: true
-
-        - name: "[6/7] Relate landscape-server to rabbitmq-server"
-          ansible.builtin.command: "sg lxd -c 'juju relate -m {{ model_name }} landscape-server rabbitmq-server'"
-          changed_when: true
-
-        - name: "[7/7] Relate landscape-server to haproxy"
-          ansible.builtin.command: "sg lxd -c 'juju relate -m {{ model_name }} landscape-server haproxy'"
-          changed_when: true
-
-        - name: "Wait for landscape-server to become active"
-          ansible.builtin.command: "sg lxd -c 'juju wait-for application -m {{ model_name }} landscape-server --timeout=10m'"
-          changed_when: false
+      ansible.builtin.command: "sg lxd -c 'juju deploy -m {{ model_name }} landscape-scalable --channel=stable --overlay {{ overlay_path }}'"
+      changed_when: true
 
     # --- BLOCK FOR HA (PRODUCTION) - Not refactored, will be skipped ---
     - name: Deploy for HA Cluster (Production Environment)
