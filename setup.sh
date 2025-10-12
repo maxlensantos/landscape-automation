@@ -109,13 +109,14 @@ run_playbook() {
             # A senha do sudo (become) é validada no início do script com 'sudo -v'.
             # O Ansible irá utilizar o cache de senha do sudo.
     # 2. Lógica inteligente para a senha do Vault
-    # Verifica se o arquivo de segredos parece estar criptografado
+    # A senha é solicitada no início do script e disponibilizada via arquivo.
     if grep -q "\$ANSIBLE_VAULT;" "vars/secrets.yml" 2>/dev/null; then
         if [ -f "$VAULT_PASS_FILE" ]; then
-            # Se o arquivo de senha existe, use-o
             ansible_args+=("--vault-password-file" "$VAULT_PASS_FILE")
+        elif [ -n "${TEMP_VAULT_FILE-}" ]; then
+            ansible_args+=("--vault-password-file" "$TEMP_VAULT_FILE")
         else
-            # Se não existe, peça a senha do vault de forma segura
+            # Fallback para o caso de o script ser chamado de forma inesperada
             ansible_args+=("--ask-vault-pass")
         fi
     fi
@@ -332,6 +333,17 @@ main() {
     echo -e "${TAG_ACTION} A execução pode exigir privilégios de administrador (sudo).${RESET}"
     sudo -v
     echo ""
+
+    # Lida com a senha do Vault de forma centralizada
+    if grep -q "\$ANSIBLE_VAULT;" "vars/secrets.yml" 2>/dev/null && [ ! -f "$VAULT_PASS_FILE" ]; then
+        read -s -p "Vault password: " VAULT_PASSWORD_VAR
+        echo
+        TEMP_VAULT_FILE=$(mktemp)
+        echo "$VAULT_PASSWORD_VAR" > "$TEMP_VAULT_FILE"
+        # Garante que o arquivo temporário seja limpo ao sair
+        trap 'rm -f "$TEMP_VAULT_FILE"' EXIT
+        export TEMP_VAULT_FILE
+    fi
 
     if [ ! -d "playbooks" ] || [ ! -d "inventory" ]; then
         die "Este script deve ser executado a partir do diretório raiz 'landscape-automation'."
