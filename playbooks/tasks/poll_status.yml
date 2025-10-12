@@ -8,7 +8,7 @@
   ignore_errors: true
 
 - name: Calculate progress and check health
-  ansible.builtin.command:
+  ansible.builtin.shell:
     cmd: |
       python3 -c '
 import json, sys
