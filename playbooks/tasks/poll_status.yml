@@ -14,22 +14,25 @@
 import json, sys
 output = {"active": 0, "total": 0, "all_done": False}
 try:
-    status = json.loads(sys.stdin.read())
-    apps = status.get("applications", {})
-    if apps:
-        for app_data in apps.values():
-            if "units" in app_data:
-                app_units = app_data.get("units", {})
-                # Ignore apps that have scaled to 0 but are still present
-                if len(app_units) > 0:
-                    output["total"] += len(app_units)
-                    for unit_data in app_units.values():
-                        workload_ok = unit_data.get("workload-status", {}).get("current") == "active"
-                        agent_ok = unit_data.get("juju-status", {}).get("current") == "idle"
-                        if workload_ok and agent_ok:
-                            output["active"] += 1
+    stdin_content = sys.stdin.read()
+    if stdin_content.strip():
+        status = json.loads(stdin_content)
+        apps = status.get("applications", {})
+        if apps:
+            for app_data in apps.values():
+                if "units" in app_data:
+                    app_units = app_data.get("units", {})
+                    if len(app_units) > 0:
+                        output["total"] += len(app_units)
+                        for unit_data in app_units.values():
+                            workload_ok = unit_data.get("workload-status", {}).get("current") == "active"
+                            agent_ok = unit_data.get("juju-status", {}).get("current") == "idle"
+                            if workload_ok and agent_ok:
+                                output["active"] += 1
     if output["total"] > 0 and output["active"] == output["total"]:
         output["all_done"] = True
+except (json.JSONDecodeError, Exception):
+    pass # On any error, just use the default output values and exit 1
 finally:
     print(json.dumps(output))
     sys.exit(0 if output["all_done"] else 1)
