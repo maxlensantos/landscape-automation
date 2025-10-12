@@ -7,91 +7,73 @@
   changed_when: false
   ignore_errors: true
 
-- name: Safely parse Juju status JSON
+- name: Calculate progress and check health
+  ansible.builtin.command:
+    cmd: |
+      python3 -c '
+import json, sys
+output = {"active": 0, "total": 0, "all_done": False}
+try:
+    status = json.loads(sys.stdin.read())
+    apps = status.get("applications", {})
+    if apps:
+        for app_data in apps.values():
+            if "units" in app_data:
+                app_units = app_data.get("units", {})
+                # Ignore apps that have scaled to 0 but are still present
+                if len(app_units) > 0:
+                    output["total"] += len(app_units)
+                    for unit_data in app_units.values():
+                        workload_ok = unit_data.get("workload-status", {}).get("current") == "active"
+                        agent_ok = unit_data.get("juju-status", {}).get("current") == "idle"
+                        if workload_ok and agent_ok:
+                            output["active"] += 1
+    if output["total"] > 0 and output["active"] == output["total"]:
+        output["all_done"] = True
+finally:
+    print(json.dumps(output))
+    sys.exit(0 if output["all_done"] else 1)
+      '
+    stdin: "{{ juju_status_json.stdout }}"
+  register: health_check_result
+  changed_when: false
+  failed_when: false # We handle the exit code manually
+
+- name: Set completion and progress facts
   ansible.builtin.set_fact:
-    juju_status_data: "{{ juju_status_json.stdout | from_json }}"
-  register: parse_result
-  failed_when: false
-  when: juju_status_json.stdout is defined and juju_status_json.stdout != ""
+    all_apps_active: "{{ health_check_result.rc == 0 }}"
+    progress_info: "{{ health_check_result.stdout | from_json if health_check_result.stdout != '' else {'active': 0, 'total': 0} }}"
+  when: health_check_result is defined
 
-- name: Parse status and identify issues
-  when: parse_result is succeeded and juju_status_data is defined
-  block:
-    - name: "Check cluster health with a robust Python script"
-      ansible.builtin.command:
-        cmd: "python3 -c '\nimport json, sys;\nstdin_content = sys.stdin.read();\nif not stdin_content: sys.exit(1);\ntry:\n    status = json.loads(stdin_content);\n    apps = status.get(\"applications\", {});\n    if not apps: sys.exit(1);\n    for app_name, app_data in apps.items():\n        if not app_data.get(\"units\"): continue;\n        app_status = app_data.get(\"application-status\", {}).get(\"current\");\n        if app_status != \"active\":\n            sys.exit(1);\n    sys.exit(0);\nexcept Exception:\n    sys.exit(1);\n        '"
-        stdin: "{{ juju_status_json.stdout }}"
-      register: health_check_result
-      changed_when: false
-      failed_when: false
-
-    - name: "Set completion fact based on Python script result"
-      ansible.builtin.set_fact:
-        all_apps_active: "{{ health_check_result.rc == 0 }}"
-
-    - name: Identify units in error state
-      ansible.builtin.set_fact:
-        error_units: "{{ error_units_as_string | from_yaml }}"
-      vars:
-        error_units_as_string: |
-          {% set units = [] %}
-          {% set status = juju_status_json.stdout | from_json %}
-          {% set apps = status.get('applications', {}) %}
-          {% for app_name, app_data in apps.items() %}
-            {% if app_data.units is defined %}
-              {% for unit_name, unit_data in app_data.units.items() %}
-                {% if unit_data.get('workload-status', {}).get('current', '') == 'error' %}
-                  {% set _ = units.append({
-                    'name': unit_name, 
-                    'message': unit_data.get('workload-status', {}).get('message', ''),
-                    'app': app_name
-                  }) %}
-                {% endif %}
-              {% endfor %}
-            {% endif %}
-          {% endfor %}
-          {{ units | to_yaml }}
-      when: not (health_check_result.rc == 0)
-
-- name: Attempt to resolve units in error state
-  when: 
-    - not all_apps_active
-    - error_units is defined
-    - error_units | length > 0
-    - retry_num > 30
-    - retry_num is divisibleby 20
-  block:
-    - name: Log error units being resolved
-      ansible.builtin.debug:
-        msg: "Tentando resolver unidade com erro: {{ item.name }} ({{ item.message }})"
-      loop: "{{ error_units }}"
-      loop_control:
-        label: "{{ item.name }}"
-
-    - name: Resolve HAProxy SSL certificate error specifically
-      ansible.builtin.command: "sg lxd -c 'juju resolved {{ item.name }}'"
-      loop: "{{ error_units }}"
-      loop_control:
-        label: "{{ item.name }}"
-      when: "'certificate' in item.message or 'hook failed' in item.message"
-      changed_when: true
-      register: resolve_result
-      failed_when: false
-
-    - name: Wait brief moment after resolve
-      ansible.builtin.pause:
-        seconds: 5
-      when: resolve_result.changed
-
-- name: Display live Juju status
+- name: Display progress and live status
   when: not all_apps_active
-  ansible.builtin.debug:
-    msg: |
-      ######################################################################
-      #  AGUARDANDO CLUSTER (TENTATIVA {{ retry_num }}/{{ max_iterations }}) - Timeout em ~{{ ((max_iterations - retry_num) * 5 / 60) | round }} min  #
-      ######################################################################
+  ansible.builtin.shell: |
+    active_units={{ progress_info.active | default(0) }}
+    total_units={{ progress_info.total | default(0) }}
 
-      {{ juju_status_json.stdout }}
+    if [ "$total_units" -gt 0 ]; then
+        percent=$((active_units * 100 / total_units))
+    else
+        percent=0
+    fi
+
+    bar_width=40
+    completed_width=$((percent * bar_width / 100))
+    bar=$(printf "%-${completed_width}s" "" | tr ' ' '❚')$(printf "%-$((bar_width - completed_width))s" "" | tr ' ' '-')
+
+    printf "\033[H\033[J"
+    echo "######################################################################"
+    echo "#  AGUARDANDO CLUSTER (TENTATIVA {{ retry_num }}/{{ max_iterations }}) - Timeout em ~{{ ((max_iterations - retry_num) * 5 / 60) | round }} min  #"
+    echo "######################################################################"
+    echo ""
+    echo " Progresso: [${bar}] ${percent}% (${active_units}/${total_units} unidades prontas)"
+    echo ""
+
+    sg lxd -c "juju status"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  failed_when: false
 
 - name: Pause for 5 seconds between checks
   when: not all_apps_active
