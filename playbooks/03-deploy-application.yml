@@ -39,26 +39,11 @@
                 ssl_cert: {{ cert_content_b64 }}
                 ssl_key: {{ key_content_b64 }}
 
-    - name: Check for available models
-      ansible.builtin.command: sg lxd -c "juju models --format=json"
-      register: juju_models_json
-      changed_when: false
-      become: no
-      ignore_errors: true
-
-    - name: Initialize model_names list
-      ansible.builtin.set_fact:
-        model_names: []
-
-    - name: Set list of model names
-      ansible.builtin.set_fact:
-        model_names: "{{ (juju_models_json.stdout | from_json).models | map(attribute='name') | list }}"
-      when: juju_models_json.stdout != ""
-
-    - name: Add a model for the landscape application
+    - name: Add a model for the landscape application (idempotent)
       ansible.builtin.command: "sg lxd -c 'juju add-model {{ model_name }}'"
-      when: model_name not in model_names
-      changed_when: true
+      register: add_model_result
+      failed_when: "add_model_result.rc != 0 and 'already exists' not in add_model_result.stderr"
+      changed_when: "'already exists' not in add_model_result.stderr"
       become: no
 
     - name: Deploy Landscape via official stable bundle
