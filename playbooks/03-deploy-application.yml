@@ -46,6 +46,10 @@
       become: no
       ignore_errors: true
 
+    - name: Initialize model_names list
+      ansible.builtin.set_fact:
+        model_names: []
+
     - name: Set list of model names
       ansible.builtin.set_fact:
         model_names: "{{ (juju_models_json.stdout | from_json).models | map(attribute='name') | list }}"
