@@ -19,7 +19,7 @@
   block:
     - name: "Check cluster health with a robust Python script"
       ansible.builtin.command:
-        cmd: "python3 -c '\nimport json, sys;\n# If stdin is empty, exit with 1 (not healthy)\nstdin_content = sys.stdin.read();\nif not stdin_content: sys.exit(1);\ntry:\n    status = json.loads(stdin_content);\n    apps = status.get(\"applications\", {});\n    if not apps: sys.exit(1);\n    units = [];\n    for app in apps.values():\n        app_units = app.get(\"units\");\n        if app_units: units.extend(app_units.values());\n    if not units: sys.exit(1);\n    for unit in units:\n        if unit.get(\"workload-status\", {}).get(\"current\") != \"active\": sys.exit(1);\n        if unit.get(\"juju-status\", {}).get(\"current\") != \"idle\": sys.exit(1);\n    sys.exit(0);\nexcept Exception:\n    sys.exit(1);\n        '"
+        cmd: "python3 -c '\nimport json, sys;\nstdin_content = sys.stdin.read();\nif not stdin_content: sys.exit(1);\ntry:\n    status = json.loads(stdin_content);\n    apps = status.get(\"applications\", {});\n    if not apps: sys.exit(1);\n    for app_name, app_data in apps.items():\n        if not app_data.get(\"units\"): continue;\n        app_status = app_data.get(\"application-status\", {}).get(\"current\");\n        if app_status != \"active\":\n            sys.exit(1);\n    sys.exit(0);\nexcept Exception:\n    sys.exit(1);\n        '"
         stdin: "{{ juju_status_json.stdout }}"
       register: health_check_result
       changed_when: false

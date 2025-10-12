@@ -106,9 +106,8 @@ run_playbook() {
     # Prepara os argumentos para o ansible-playbook
     local ansible_args=()
     
-    # 1. Sempre pedir a senha do sudo (become) de forma segura, usando -K
-    ansible_args+=("-K")
-
+            # A senha do sudo (become) é validada no início do script com 'sudo -v'.
+            # O Ansible irá utilizar o cache de senha do sudo.
     # 2. Lógica inteligente para a senha do Vault
     # Verifica se o arquivo de segredos parece estar criptografado
     if grep -q "\$ANSIBLE_VAULT;" "vars/secrets.yml" 2>/dev/null; then
@@ -329,6 +328,11 @@ esac
 
 # --- Ponto de Entrada do Script ---
 main() {
+    # Valida a senha do sudo no início para evitar múltiplos prompts
+    echo -e "${TAG_ACTION} A execução pode exigir privilégios de administrador (sudo).${RESET}"
+    sudo -v
+    echo ""
+
     if [ ! -d "playbooks" ] || [ ! -d "inventory" ]; then
         die "Este script deve ser executado a partir do diretório raiz 'landscape-automation'."
     fi
