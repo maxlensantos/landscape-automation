@@ -93,7 +93,8 @@ is_playbook_implemented() {
 
 run_playbook() {
     local playbook_file="$1"
-    local extra_args=("${@:2}")
+    # O primeiro argumento é o nome do playbook, o resto são argumentos extras.
+    local extra_playbook_args=("${@:2}")
     
     if ! is_playbook_implemented "$playbook_file"; then
         echo -e "${WARN_COLOR}Aviso: O Playbook 'playbooks/${playbook_file}' não está implementado.${RESET}"
@@ -102,12 +103,26 @@ run_playbook() {
 
     echo -e "\n${PROMPT_COLOR}Executando o playbook: ${playbook_file} no ambiente: ${ENV_NAME}${RESET}"
     
-    local vault_args=()
-    if [ -f "$VAULT_PASS_FILE" ]; then
-        vault_args=("--vault-password-file" "$VAULT_PASS_FILE")
+    # Prepara os argumentos para o ansible-playbook
+    local ansible_args=()
+    
+    # 1. Sempre pedir a senha do sudo (become) de forma segura, usando -K
+    ansible_args+=("-K")
+
+    # 2. Lógica inteligente para a senha do Vault
+    # Verifica se o arquivo de segredos parece estar criptografado
+    if grep -q "\$ANSIBLE_VAULT;" "vars/secrets.yml" 2>/dev/null; then
+        if [ -f "$VAULT_PASS_FILE" ]; then
+            # Se o arquivo de senha existe, use-o
+            ansible_args+=("--vault-password-file" "$VAULT_PASS_FILE")
+        else
+            # Se não existe, peça a senha do vault de forma segura
+            ansible_args+=("--ask-vault-pass")
+        fi
     fi
     
-    if ansible-playbook -i "${INVENTORY_FILE}" "playbooks/${playbook_file}" "${vault_args[@]}" "${extra_args[@]}"; then
+    # Executa o comando com todos os argumentos construídos
+    if ansible-playbook -i "${INVENTORY_FILE}" "playbooks/${playbook_file}" "${ansible_args[@]}" "${extra_playbook_args[@]}"; then
         echo -e "${GREEN}✓ Playbook '${playbook_file}' concluído com sucesso.${RESET}"
         return 0
     else
