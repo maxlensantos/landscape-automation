@@ -1,0 +1,35 @@
+---
+# tasks/poll_destruction.yml
+
+- name: Check for available models
+  ansible.builtin.command: sg lxd -c "juju models --format=json"
+  register: juju_models_json
+  changed_when: false
+  ignore_errors: true # Controller might be gone, or command might fail temporarily
+
+- name: Set list of model names
+  ansible.builtin.set_fact:
+    model_names: "{{ ((juju_models_json.stdout | from_json).models | map(attribute='name') | list) if juju_models_json.stdout and 'models' in (juju_models_json.stdout | from_json) else [] }}"
+
+- name: Check if target model is destroyed
+  ansible.builtin.set_fact:
+    model_destroyed: "{{ model_name not in model_names }}"
+
+- name: Display destruction progress
+  when: not model_destroyed
+  ansible.builtin.shell: |
+    spinner_chars=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    spinner_index=$(( {{ retry_num }} % ${#spinner_chars[@]} ))
+    spinner=${spinner_chars[$spinner_index]}
+    # ANSI escape code to clear line and move cursor to beginning
+    printf "\033[2K\r"
+    printf "  %s Aguardando a remoção completa do modelo '%s'... (Tentativa %s/%s)" "$spinner" "{{ model_name }}" "{{ retry_num }}" "{{ max_retries }}"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  failed_when: false # We just display info
+
+- name: Pause between checks
+  when: not model_destroyed
+  ansible.builtin.pause:
+    seconds: 10
