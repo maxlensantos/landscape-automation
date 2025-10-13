@@ -1,0 +1,98 @@
+# .gitlab-ci.yml
+stages:
+  - lint
+  - molecule_test
+  - integration_test
+  - cleanup
+
+variables:
+  # Variável de ambiente para a senha do Ansible Vault.
+  # Configure isso como uma variável secreta no GitLab CI/CD Settings -> CI/CD -> Variables.
+  ANSIBLE_VAULT_PASSWORD: $ANSIBLE_VAULT_PASSWORD 
+  # Variável para o nome do controlador Juju no CI
+  CI_JUJU_CONTROLLER_NAME: ci-controller
+  # Variável para o nome do modelo Juju no CI
+  CI_JUJU_MODEL_NAME: ci-landscape
+
+# Template base para jobs que precisam de Juju/LXD
+.juju_lxd_base:
+  image: ubuntu:22.04 # Ou uma imagem customizada com Ansible, Juju, LXD, Python
+  before_script:
+    - apt-get update -qq && apt-get install -y python3 python3-pip openssl curl jq
+    - snap install juju --classic
+    - snap install lxd
+    - lxd init --auto --storage-backend dir # Inicializa LXD de forma não interativa
+    - usermod -a -G lxd gitlab-runner # Adiciona o usuário do CI ao grupo lxd
+    - newgrp lxd # Ativa o novo grupo
+    - juju bootstrap localhost $CI_JUJU_CONTROLLER_NAME # Bootstrap do controlador Juju para CI
+    - juju add-model $CI_JUJU_MODEL_NAME # Adiciona um modelo para a implantação de teste
+  after_script:
+    # Garante que o ambiente Juju seja limpo após o teste, mesmo que falhe
+    - juju destroy-model -m $CI_JUJU_CONTROLLER_NAME:$CI_JUJU_MODEL_NAME --force --no-prompt || true
+    - juju kill-controller $CI_JUJU_CONTROLLER_NAME --force --no-prompt || true
+    - lxc list -c n --format=json | jq -r '.[].name' | xargs -r lxc delete --force || true
+
+# ==============================================================================
+# Stage: Linting e Verificação de Sintaxe
+# ==============================================================================
+lint:
+  stage: lint
+  image: python:3.10-slim-bullseye # Imagem mais leve para linting
+  script:
+    - pip install ansible-lint yamllint shellcheck
+    - ansible-lint playbooks/
+    - yamllint .
+    - shellcheck setup.sh
+  allow_failure: false # Falha no linting deve quebrar o pipeline
+
+# ==============================================================================
+# Stage: Testes com Molecule (para playbooks/roles individuais)
+# ==============================================================================
+# Exemplo para um playbook. Você repetiria isso para outros playbooks/roles.
+molecule_prepare_vms:
+  stage: molecule_test
+  extends: .juju_lxd_base # Usa o template base com Juju/LXD
+  script:
+    - pip install molecule ansible-core docker # Instala Molecule e driver Docker
+    - cd playbooks/00-prepare-vms # Navega para o diretório do playbook/role
+    - molecule test # Executa os testes definidos no Molecule
+  # Variáveis específicas para o Molecule, se necessário
+  variables:
+    MOLECULE_EPHEMERAL_DIRECTORY: $CI_PROJECT_DIR/molecule_ephemeral
+
+# ==============================================================================
+# Stage: Teste de Integração Completo (Implantação do Cluster)
+# ==============================================================================
+full_integration_test:
+  stage: integration_test
+  extends: .juju_lxd_base # Usa o template base com Juju/LXD
+  script:
+    - echo "Executando o fluxo completo de implantação do ambiente de teste..."
+    # Para CI, é melhor chamar os playbooks diretamente, pois setup.sh é interativo.
+    # Aqui, chamamos os playbooks na sequência definida pelo seu setup.sh para o ambiente de Teste.
+    - ansible-playbook -i inventory/testing.ini playbooks/00-prepare-vms.yml
+    - ansible-playbook -i inventory/testing.ini playbooks/01-setup-cluster-lxd.yml
+    - ansible-playbook -i inventory/testing.ini playbooks/02-bootstrap-juju.yml
+    - ansible-playbook -i inventory/testing.ini playbooks/03-deploy-application.yml
+    - ansible-playbook -i inventory/testing.ini playbooks/98-verify-health.yml
+    - ansible-playbook -i inventory/testing.ini playbooks/06-expose-proxy.yml
+    - echo "Implantação de teste concluída com sucesso!"
+
+# ==============================================================================
+# Stage: Limpeza (Opcional, para garantir que nada fique órfão)
+# Este estágio é mais um fallback, pois o after_script do .juju_lxd_base já faz a limpeza.
+# ==============================================================================
+cleanup_final:
+  stage: cleanup
+  image: ubuntu:22.04
+  script:
+    - apt-get update -qq && apt-get install -y snapd jq
+    - snap install juju --classic || true # Instala juju se não estiver presente
+    - snap install lxd || true # Instala lxd se não estiver presente
+    - lxd init --auto --storage-backend dir || true
+    - usermod -a -G lxd gitlab-runner || true
+    - newgrp lxd || true
+    - juju destroy-model -m $CI_JUJU_CONTROLLER_NAME:$CI_JUJU_MODEL_NAME --force --no-prompt || true
+    - juju kill-controller $CI_JUJU_CONTROLLER_NAME --force --no-prompt || true
+    - lxc list -c n --format=json | jq -r '.[].name' | xargs -r lxc delete --force || true
+  when: always # Sempre executa, mesmo se jobs anteriores falharem
