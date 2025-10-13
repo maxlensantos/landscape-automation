@@ -3,6 +3,9 @@
   hosts: all
   become: yes
 
+  collections:
+    - community.general
+
   tasks:
     - name: Install LXD from snap
       ansible.builtin.snap:

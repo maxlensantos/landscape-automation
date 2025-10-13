@@ -3,6 +3,9 @@
   hosts: all
   gather_facts: yes
 
+  collections:
+    - community.general
+
   tasks:
     - name: Install Juju client from snap
       ansible.builtin.snap:

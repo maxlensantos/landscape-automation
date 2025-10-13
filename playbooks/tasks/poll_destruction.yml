@@ -18,12 +18,10 @@
 - name: Display destruction progress
   when: not model_destroyed
   ansible.builtin.shell: |
-    spinner_chars=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-    spinner_index=$(( {{ retry_num }} % ${#spinner_chars[@]} ))
-    spinner=${spinner_chars[$spinner_index]}
-    # ANSI escape code to clear line and move cursor to beginning
-    printf "\033[2K\r"
-    printf "  %s Aguardando a remoção completa do modelo '%s'... (Tentativa %s/%s)" "$spinner" "{{ model_name }}" "{{ retry_num }}" "{{ max_retries }}"
+    cmd: >
+      printf "\033[2K\r";
+      spinner_char="{{ spinner_chars[retry_num % spinner_chars | length] }}";
+      printf "  %s Aguardando a remoção completa do modelo '%s'... (Tentativa %s/%s)" "$spinner_char" "{{ model_name }}" "{{ retry_num }}" "{{ max_retries }}"
   args:
     executable: /bin/bash
   changed_when: false
