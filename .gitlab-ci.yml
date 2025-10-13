@@ -41,6 +41,7 @@ lint:
   script:
     - apt-get update -qq && apt-get install -y python3 python3-pip shellcheck # Instala Python e shellcheck
     - pip install ansible-lint yamllint # Instala linters Python
+    - ansible-galaxy collection install community.general # Instala a coleção para módulos como snap
     - ansible-lint playbooks/
     - yamllint .
     - shellcheck setup.sh
