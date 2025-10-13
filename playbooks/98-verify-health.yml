@@ -7,6 +7,7 @@
   vars:
     spinner_chars: ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏']
     max_iterations: 720  # 60 minutos (720 * 5 segundos)
+    problem_summary: []
 
   tasks:
     - name: Initialize completion fact
@@ -66,9 +67,11 @@
     - name: Display HUMANIZED "Still Waiting" Message
       when: not all_apps_active
       block:
+
+
         - name: Generate a summary of non-active applications
           ansible.builtin.set_fact:
-            problem_summary: "{{ problem_summary | default([]) + [ 'App ' + item.key + ' esta ' + item.value.get('application-status', {}).get('current', 'desconhecido') ] }}"
+            problem_summary: "{{ problem_summary + [ 'App ' + item.key + ' esta ' + item.value.get('application-status', {}).get('current', 'desconhecido') ] }}"
           loop: "{{ (juju_status_json.stdout | from_json).applications | dict2items }}"
           when:
             - item.value.get('application-status', {}).get('current', 'desconhecido') != 'active'
@@ -90,3 +93,14 @@
               {% endfor %}
 
               Aguarde mais alguns minutos ou investigue os problemas apontados.
+
+    - name: Re-check Juju status for final display if all_apps_active is true
+      ansible.builtin.command: sg lxd -c "juju status --format=json"
+      register: juju_status_json_final
+      changed_when: false
+      when: all_apps_active
+
+    - name: Set haproxy_ip for final display
+      ansible.builtin.set_fact:
+        haproxy_ip: "{{ ((juju_status_json_final.stdout | from_json).applications.haproxy.units['haproxy/0'])['public-address'] }}"
+      when: all_apps_active and juju_status_json_final is defined and juju_status_json_final.stdout is defined and juju_status_json_final.stdout != ''

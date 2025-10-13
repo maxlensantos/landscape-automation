@@ -7,6 +7,10 @@
   changed_when: false
   ignore_errors: true
 
+- name: DEBUG - Print Juju status JSON output
+  ansible.builtin.debug:
+    var: juju_status_json.stdout
+
 - name: Calculate progress and check health
   ansible.builtin.shell:
     cmd: |
@@ -41,6 +45,13 @@
   register: health_check_result
   changed_when: false
   failed_when: false # We handle the exit code manually
+
+- name: DEBUG - Python script output and RC
+  ansible.builtin.debug:
+    msg:
+      - "Python script output: {{ health_check_result.stdout }}"
+      - "Python script RC: {{ health_check_result.rc }}"
+      - "Python script stderr: {{ health_check_result.stderr }}" # Check for errors here
 
 - name: Set completion and progress facts
   ansible.builtin.set_fact:

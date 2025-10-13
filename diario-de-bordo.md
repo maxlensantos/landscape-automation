@@ -188,3 +188,34 @@ O que parecia uma falha permanente era, na verdade, o playbook esperando o momen
 ### Resultado da Missão
 
 A automação agora está não apenas funcional, mas sua lógica e comportamento estão completamente compreendidos. O uso do bundle `stable` tornou o deploy mais rápido e previsível, e a compreensão do mecanismo de self-healing nos dá confiança para deixar a automação executar seu curso completo. A missão foi um sucesso.
+
+---
+## 12 de Outubro de 2025: Implementação de CI/CD e Melhorias na Verificação de Saúde
+
+**Autor:** Gemini, Engenheiro de Automação Sênior
+
+**Missão:** Aumentar a confiabilidade e a qualidade da automação através da implementação de um pipeline de CI/CD no GitLab, incluindo testes de linting, testes de unidade com Molecule e testes de integração completos. Além disso, corrigir um problema de loop infinito na verificação de saúde.
+
+### Implementação de CI/CD com GitLab e Molecule
+
+Para garantir que as mudanças no projeto sejam validadas automaticamente e que a automação permaneça robusta, foi implementado um pipeline de CI/CD no GitLab.
+
+-   **`Added` - Arquivo `.gitlab-ci.yml`:** Criado o arquivo de configuração do pipeline, definindo os seguintes estágios:
+    *   **`lint`**: Executa `ansible-lint`, `yamllint` e `shellcheck` para garantir a conformidade com padrões de código e evitar erros de sintaxe.
+    *   **`molecule_test`**: Executa testes de unidade/integração para playbooks Ansible usando Molecule. Uma configuração inicial foi criada para o playbook `00-prepare-vms`, verificando a instalação de pré-requisitos como `python3`, `snapd` e `python3-pip`.
+    *   **`integration_test`**: Executa o fluxo completo de implantação do cluster de teste, chamando os playbooks Ansible na sequência correta, similar ao que o `setup.sh` faria, mas de forma não interativa. Isso valida a integração de todos os componentes.
+    *   **`cleanup`**: Garante que os recursos do Juju e LXD criados durante os testes sejam removidos, mantendo o ambiente de CI limpo.
+-   **`Added` - Configuração do Molecule:** Criada a estrutura `playbooks/00-prepare-vms/molecule/default` com os arquivos `molecule.yml`, `converge.yml` e `verify.yml` para testar o playbook `00-prepare-vms`.
+-   **`Refactored` - Base de Jobs para CI:** Criado um template `.juju_lxd_base` no `.gitlab-ci.yml` para padronizar a configuração de ambientes de teste com Juju e LXD, incluindo a instalação de dependências e o bootstrap de um controlador Juju efêmero.
+
+### Correção na Lógica de Verificação de Saúde (`98-verify-health.yml` e `tasks/poll_status.yml`)
+
+Foi identificado e corrigido um problema no playbook de verificação de saúde que causava um loop infinito e um erro de variável indefinida (`problem_summary`) em certas condições.
+
+-   **`Fixed` - Inicialização de `problem_summary`:** No `playbooks/98-verify-health.yml`, a variável `problem_summary` agora é inicializada como uma lista vazia antes de ser utilizada no bloco `Display HUMANIZED "Still Waiting" Message`. Isso evita o erro de variável indefinida quando todas as aplicações já estão ativas e a tarefa de geração de resumo é pulada.
+-   **`Fixed` - Disponibilidade de `juju_status_json`:** Para garantir que o bloco de sucesso (`Display SUCCESS and Next Steps`) sempre tenha acesso aos dados mais recentes do `juju status`, o comando `juju status --format=json` é re-executado e registrado em `juju_status_json_final` antes de exibir as instruções finais.
+-   **`Added` - Depuração no Script Python:** Adicionadas mensagens de depuração detalhadas ao script Python em `tasks/poll_status.yml` para exibir a saída completa e o código de retorno do script. Isso ajudará a diagnosticar com precisão por que a variável `all_apps_active` pode estar sendo avaliada incorretamente em cenários futuros.
+
+### Resultado
+
+A implementação do pipeline de CI/CD e as melhorias na verificação de saúde aumentam significativamente a confiabilidade e a manutenibilidade do projeto. As mudanças garantem que a automação seja testada de forma abrangente e que os problemas sejam identificados e depurados de forma mais eficiente.
