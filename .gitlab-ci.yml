@@ -18,7 +18,7 @@ variables:
 .juju_lxd_base:
   image: ubuntu:22.04 # Ou uma imagem customizada com Ansible, Juju, LXD, Python
   before_script:
-    - apt-get update -qq && apt-get install -y python3 python3-pip openssl curl jq
+    - apt-get update -qq && apt-get install -y python3 python3-pip openssl curl jq snapd
     - snap install juju --classic
     - snap install lxd
     - lxd init --auto --storage-backend dir # Inicializa LXD de forma não interativa
