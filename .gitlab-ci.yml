@@ -37,9 +37,10 @@ variables:
 # ==============================================================================
 lint:
   stage: lint
-  image: python:3.10-slim-bullseye # Imagem mais leve para linting
+  image: ubuntu:22.04 # Imagem base para instalar shellcheck via apt
   script:
-    - pip install ansible-lint yamllint shellcheck
+    - apt-get update -qq && apt-get install -y python3 python3-pip shellcheck # Instala Python e shellcheck
+    - pip install ansible-lint yamllint # Instala linters Python
     - ansible-lint playbooks/
     - yamllint .
     - shellcheck setup.sh
