@@ -52,6 +52,10 @@ else # Fallback
     DANGER_COLOR="${RED}"
 fi
 
+SCRIPT_VERSION="2.2"
+echo "DEBUG: SCRIPT_VERSION no topo do script: ${SCRIPT_VERSION}"
+VAULT_PASS_FILE="../vault_pass.txt"
+
 ENV_NAME=""
 INVENTORY_FILE=""
 LAST_ACTION_STATUS=""
@@ -144,6 +148,7 @@ print_light_header() {
 }
 
 select_environment() {
+    echo "DEBUG: SCRIPT_VERSION no início de select_environment(): ${SCRIPT_VERSION}"
     while true; do
         clear
         echo -e "${TITLE_COLOR}"
@@ -470,6 +475,7 @@ ensure_persistent_session() {
 }
 
 main() {
+    echo "DEBUG: SCRIPT_VERSION no início de main(): ${SCRIPT_VERSION}"
     # Garante que o script rode em uma sessão persistente
     ensure_persistent_session "$@"
 
