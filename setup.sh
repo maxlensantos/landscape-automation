@@ -52,10 +52,9 @@ else # Fallback
     DANGER_COLOR="${RED}"
 fi
 
-SCRIPT_VERSION="2.2"
-VAULT_PASS_FILE="../vault_pass.txt"
 ENV_NAME=""
 INVENTORY_FILE=""
+LAST_ACTION_STATUS=""
 
 # --- Funções Auxiliares ---
 
@@ -67,9 +66,9 @@ die() {
 confirm_action() {
     local prompt="$1"
     local response
-    read -p "$(echo -e "${TAG_ACTION} ${WARN_COLOR}${prompt} [digite 'sim' para confirmar]: ${RESET}")" response
-    response=${response,,}
-    if [[ "$response" == "sim" ]]; then
+    read -p "$(echo -e "${TAG_ACTION} ${WARN_COLOR}${prompt} [s/N]: ${RESET}")" response
+    response=${response:-N}
+    if [[ "$response" =~ ^[Ss]$ ]]; then
         return 0
     else
         echo -e "${RED}Ação cancelada.${RESET}"
@@ -93,6 +92,9 @@ is_playbook_implemented() {
 }
 
 run_playbook() {
+    # Revalida o ticket do sudo para garantir que não expire durante a execução.
+    sudo -v
+
     local playbook_file="$1"
     # O primeiro argumento é o nome do playbook, o resto são argumentos extras.
     local extra_playbook_args=("${@:2}")
@@ -107,17 +109,13 @@ run_playbook() {
     # Prepara os argumentos para o ansible-playbook
     local ansible_args=()
     
-            # A senha do sudo (become) é validada no início do script com 'sudo -v'.
-            # O Ansible irá utilizar o cache de senha do sudo.
-    # 2. Lógica inteligente para a senha do Vault
-    # A senha é solicitada no início do script e disponibilizada via arquivo.
+    # Lógica inteligente para a senha do Vault
     if grep -q "\$ANSIBLE_VAULT;" "vars/secrets.yml" 2>/dev/null; then
         if [ -f "$VAULT_PASS_FILE" ]; then
             ansible_args+=("--vault-password-file" "$VAULT_PASS_FILE")
         elif [ -n "${TEMP_VAULT_FILE-}" ]; then
             ansible_args+=("--vault-password-file" "$TEMP_VAULT_FILE")
         else
-            # Fallback para o caso de o script ser chamado de forma inesperada
             ansible_args+=("--ask-vault-pass")
         fi
     fi
@@ -133,6 +131,12 @@ run_playbook() {
 }
 
 # --- Funções de UI e Menu ---
+
+print_light_header() {
+    clear
+    echo -e "${TITLE_COLOR}=== SETUP DO CLUSTER LANDSCAPE | Ambiente: [${ENV_NAME}] ===${RESET}"
+    echo ""
+}
 
 select_environment() {
     while true; do
@@ -159,7 +163,7 @@ select_environment() {
         case "$choice" in
             1)
                 local prod_confirm
-                read -p "$(echo -e "\n${TAG_ACTION} ${WARN_COLOR}Você selecionou o ambiente de PRODUÇÃO. Deseja continuar? (s/N): ${RESET}")" prod_confirm
+                read -p "$(echo -e "\n${TAG_ACTION} ${WARN_COLOR}Você selecionou o ambiente de PRODUÇÃO. Esta ação é crítica. Deseja continuar? (s/N): ${RESET}")" prod_confirm
                 prod_confirm=${prod_confirm:-N}
                 if [[ "$prod_confirm" =~ ^[Ss]$ ]]; then
                     ENV_NAME="Produção"
@@ -170,12 +174,12 @@ select_environment() {
                     sleep 1
                     continue
                 fi
-                ;; 
+                ;;
             2)
                 ENV_NAME="Teste"
                 INVENTORY_FILE="inventory/testing.ini"
                 return 0
-                ;; 
+                ;;
             3)
                 clear
                 echo -e "${TITLE_COLOR}"
@@ -198,14 +202,14 @@ select_environment() {
                 echo -e "    ---------------------------------------------------------------"
                 echo ""
                 read -p "$(echo -e "    ${TAG_ACTION} Pressione [Enter] para voltar ao menu principal... █ ${RESET}")"
-                ;; 
+                ;;
             4)
                 exit 0
-                ;; 
+                ;;
             *)
                 echo -e "\n${DANGER_COLOR}Opção inválida. Por favor, tente novamente.${RESET}"
                 sleep 1
-                ;; 
+                ;;
         esac
     done
 }
@@ -228,47 +232,79 @@ print_title_box() {
 
 advanced_menu() {
     while true; do
-        print_title_box
-        echo -e "${BLUE}Tarefas Avançadas (Manuais)${RESET}"
+        print_light_header
+        echo -e "${BLUE}Tarefas Avançadas – Administração Manual${RESET}"
         echo "-----------------------------------------------------"
-        
-        declare -a actions
-        if is_playbook_implemented "02-bootstrap-juju.yml"; then actions+=("Instalar Juju"); fi
-        if is_playbook_implemented "03-deploy-application.yml"; then actions+=("Implantar Aplicação"); fi
-        if is_playbook_implemented "05-post-config.yml"; then actions+=("Aplicar Pós-Config"); fi
-        if is_playbook_implemented "07-apply-pfx-cert.yml"; then actions+=("Aplicar Certificado PFX"); fi
-        if is_playbook_implemented "10-enable-oidc.yml"; then actions+=("Ativar Integração OIDC"); fi
-        if is_playbook_implemented "11-disable-oidc.yml"; then actions+=("Desativar Integração OIDC"); fi
-        if is_playbook_implemented "09-harden-firewall.yml"; then actions+=("Aplicar Firewall Básico (SSH,HTTP,HTTPS)"); fi
-        actions+=("Voltar ao Menu Principal")
 
-        for i in "${!actions[@]}"; do
-            printf "  ${OPTION_COLOR}%2d)${DESC_COLOR} %s\n" "$((i+1))" "${actions[i]}"
-        done
+        if [ -n "$LAST_ACTION_STATUS" ]; then
+            echo -e "[INFO] Última ação: $LAST_ACTION_STATUS\n"
+            LAST_ACTION_STATUS=""
+        fi
+
+        echo -e "${HEADER_COLOR}[Configuração]${RESET}"
+        printf "  ${OPTION_COLOR}%-40s\n" "⚙️ 1) Instalar Juju"
+        printf "  ${OPTION_COLOR}%-40s\n" "🚀 2) Implantar Aplicação"
+        printf "  ${OPTION_COLOR}%-40s\n" "🧩 3) Executar Pós-Configuração"
+        echo ""
+
+        echo -e "${HEADER_COLOR}[Integração]${RESET}"
+        printf "  ${OPTION_COLOR}%-40s\n" "🔐 4) Aplicar Certificado PFX"
+        printf "  ${OPTION_COLOR}%-40s\n" "🌐 5) Ativar Integração OIDC"
+        printf "  ${OPTION_COLOR}%-40s\n" "⛔ 6) Desativar Integração OIDC"
+        echo ""
+
+        echo -e "${HEADER_COLOR}[Rede e Segurança]${RESET}"
+        printf "  ${OPTION_COLOR}%-40s\n" "🛡️ 7) Aplicar Firewall Básico"
+        echo ""
+
+        echo -e "${HEADER_COLOR}[Sistema]${RESET}"
+        printf "  ${OPTION_COLOR}%-40s\n" "↩️ 8) Voltar ao Menu Principal"
         echo "-----------------------------------------------------"
 
         local choice
-        read -p "$(echo -e "${TAG_ACTION} Selecione a opção avançada: ${RESET}")" choice
+        read -p "$(echo -e "${TAG_ACTION}Escolha a opção desejada: ${RESET}")" choice
 
-        if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#actions[@]}" ]; then
-            echo -e "\n${DANGER_COLOR}Opção inválida.${RESET}"; continue
-        fi
-
-        local action="${actions[$choice-1]}"
-
-        case "$action" in
-            "Instalar Juju") run_playbook "02-bootstrap-juju.yml"; pause_and_continue; ;;
-            "Implantar Aplicação") run_playbook "03-deploy-application.yml"; pause_and_continue; ;;
-            "Aplicar Pós-Config") run_playbook "05-post-config.yml"; pause_and_continue; ;;
-            "Aplicar Certificado PFX") run_playbook "07-apply-pfx-cert.yml"; pause_and_continue; ;;
-            "Ativar Integração OIDC") run_playbook "10-enable-oidc.yml"; pause_and_continue; ;;
-            "Desativar Integração OIDC") run_playbook "11-disable-oidc.yml"; pause_and_continue; ;;
-            "Aplicar Firewall Básico (SSH,HTTP,HTTPS)") run_playbook "09-harden-firewall.yml"; pause_and_continue; ;;
-            "Voltar ao Menu Principal") return ;; 
+        case "$choice" in
+            1) 
+                if confirm_action "Executar a instalação do Juju?"; then
+                    if run_playbook "02-bootstrap-juju.yml"; then LAST_ACTION_STATUS="${GREEN}✓ Sucesso: Juju instalado.${RESET}"; else LAST_ACTION_STATUS="${DANGER_COLOR}✗ Falha: Instalação do Juju.${RESET}"; fi
+                fi
+                pause_and_continue; ;;
+            2) 
+                if confirm_action "Executar a implantação da aplicação?"; then
+                    if run_playbook "03-deploy-application.yml"; then LAST_ACTION_STATUS="${GREEN}✓ Sucesso: Aplicação implantada.${RESET}"; else LAST_ACTION_STATUS="${DANGER_COLOR}✗ Falha: Implantação da Aplicação.${RESET}"; fi
+                fi
+                pause_and_continue; ;;
+            3) 
+                if confirm_action "Executar a pós-configuração?"; then
+                    if run_playbook "05-post-config.yml"; then LAST_ACTION_STATUS="${GREEN}✓ Sucesso: Pós-configuração aplicada.${RESET}"; else LAST_ACTION_STATUS="${DANGER_COLOR}✗ Falha: Pós-configuração.${RESET}"; fi
+                fi
+                pause_and_continue; ;;
+            4) 
+                if confirm_action "Aplicar o certificado PFX? Esta ação pode ser disruptiva."; then
+                    if run_playbook "07-apply-pfx-cert.yml"; then LAST_ACTION_STATUS="${GREEN}✓ Sucesso: Certificado PFX aplicado.${RESET}"; else LAST_ACTION_STATUS="${DANGER_COLOR}✗ Falha: Aplicação do certificado PFX.${RESET}"; fi
+                fi
+                pause_and_continue; ;;
+            5) 
+                if confirm_action "Ativar a integração OIDC? Esta ação pode ser disruptiva."; then
+                    if run_playbook "10-enable-oidc.yml"; then LAST_ACTION_STATUS="${GREEN}✓ Sucesso: Integração OIDC ativada.${RESET}"; else LAST_ACTION_STATUS="${DANGER_COLOR}✗ Falha: Ativação do OIDC.${RESET}"; fi
+                fi
+                pause_and_continue; ;;
+            6) 
+                if confirm_action "Desativar a integração OIDC? Esta ação pode ser disruptiva."; then
+                    if run_playbook "11-disable-oidc.yml"; then LAST_ACTION_STATUS="${GREEN}✓ Sucesso: Integração OIDC desativada.${RESET}"; else LAST_ACTION_STATUS="${DANGER_COLOR}✗ Falha: Desativação do OIDC.${RESET}"; fi
+                fi
+                pause_and_continue; ;;
+            7) 
+                if confirm_action "Aplicar as regras de firewall? Isso pode impactar a conectividade."; then
+                    if run_playbook "09-harden-firewall.yml"; then LAST_ACTION_STATUS="${GREEN}✓ Sucesso: Firewall aplicado.${RESET}"; else LAST_ACTION_STATUS="${DANGER_COLOR}✗ Falha: Aplicação do firewall.${RESET}"; fi
+                fi
+                pause_and_continue; ;;
+            8) return ;;
+            *) echo -e "\n${DANGER_COLOR}Opção inválida.${RESET}"; pause_and_continue; ;;
         esac
     done
 }
-
 main_menu() {
     while true; do
         print_title_box
