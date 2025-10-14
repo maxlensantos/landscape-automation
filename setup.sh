@@ -92,7 +92,7 @@ is_playbook_implemented() {
 }
 
 run_playbook() {
-    # Revalida o ticket do sudo para garantir que não expire durante a execução.
+    # Valida o ticket do sudo uma vez antes de começar.
     sudo -v
 
     local playbook_file="$1"
@@ -106,6 +106,12 @@ run_playbook() {
 
     echo -e "\n${PROMPT_COLOR}Executando o playbook: ${playbook_file} no ambiente: ${ENV_NAME}${RESET}"
     
+    # Inicia um loop de keep-alive para o sudo APENAS durante a execução do playbook.
+    while true; do sudo -n true; sleep 60; done &>/dev/null &
+    local SUDO_KEEPALIVE_PID=$!
+    # Garante que o keep-alive seja morto mesmo se o usuário cancelar (Ctrl+C).
+    trap "kill $SUDO_KEEPALIVE_PID &>/dev/null" EXIT
+
     # Prepara os argumentos para o ansible-playbook
     local ansible_args=()
     
@@ -121,7 +127,14 @@ run_playbook() {
     fi
     
     # Executa o comando com todos os argumentos construídos
-    if ansible-playbook -i "${INVENTORY_FILE}" "playbooks/${playbook_file}" "${ansible_args[@]}" "${extra_playbook_args[@]}"; then
+    local playbook_exit_code=0
+    ansible-playbook -i "${INVENTORY_FILE}" "playbooks/${playbook_file}" "${ansible_args[@]}" "${extra_playbook_args[@]}" || playbook_exit_code=$?
+
+    # Para o processo de keep-alive e remove o trap.
+    kill $SUDO_KEEPALIVE_PID &>/dev/null
+    trap - EXIT
+
+    if [ $playbook_exit_code -eq 0 ]; then
         echo -e "${GREEN}✓ Playbook '${playbook_file}' concluído com sucesso.${RESET}"
         return 0
     else
@@ -472,16 +485,6 @@ main() {
     echo -e "${TAG_ACTION} A execução pode exigir privilégios de administrador (sudo).${RESET}"
     sudo -v
     echo ""
-
-    # Inicia um loop em background para manter o sudo vivo. O `sudo -n true` tenta
-    # rodar um comando sem pedir senha. Se o ticket estiver válido, ele o renova.
-    # Se expirar, ele falha silenciosamente, mas o próximo comando sudo real pedirá a senha.
-    # O nosso `sudo -v` inicial garante que o primeiro ticket seja válido.
-    while true; do sudo -n true; sleep 60; done &>/dev/null &
-    SUDO_KEEPALIVE_PID=$!
-    # Garante que o processo de keep-alive seja morto quando o script sair.
-    trap "kill $SUDO_KEEPALIVE_PID" EXIT
-
 
     # Lida com a senha do Vault de forma centralizada
     if grep -q "\$ANSIBLE_VAULT;" "vars/secrets.yml" 2>/dev/null && [ ! -f "$VAULT_PASS_FILE" ]; then
