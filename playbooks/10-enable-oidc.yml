@@ -1,0 +1,32 @@
+---
+- name: Enable OIDC Integration
+  hosts: all
+  connection: local
+  gather_facts: no
+
+  vars_files:
+    - ../vars/oidc_config.yml
+    - ../vars/secrets.yml
+
+  tasks:
+    - name: "Fail if OIDC variables are not defined"
+      ansible.builtin.fail:
+        msg: |
+          Por favor, defina as variáveis OIDC necessárias antes de continuar.
+          - Edite e descomente as variáveis em 'vars/oidc_config.yml'.
+          - Adicione 'oidc_client_secret' ao vault em 'vars/secrets.yml'.
+      when: oidc_client_id is not defined or oidc_client_secret is not defined
+
+    - name: "Apply OIDC configuration to landscape-server"
+      ansible.builtin.command:
+        cmd: >
+          sg lxd -c "juju config -m {{ model_name }} landscape-server
+          config='
+          [oidc]
+          client_id={{ oidc_client_id }}
+          client_secret={{ oidc_client_secret }}
+          provider_url={{ oidc_provider_url }}
+          display_name={{ oidc_display_name }}
+          scope={{ oidc_scope }}
+          '"
+      changed_when: true

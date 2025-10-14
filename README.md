@@ -17,6 +17,13 @@ Esta automação utiliza uma abordagem híbrida, combinando **Ansible** para orq
 
 ## Como Usar
 
+### Execução Robusta (Resiliência de Conexão)
+
+Para proteger a execução de tarefas longas contra desconexões de rede, o script `setup.sh` possui uma verificação de cortesia. Ao ser iniciado, ele detecta se você está em uma sessão de terminal persistente (`tmux` ou `screen`).
+
+- Se não estiver, ele irá alertá-lo e oferecer a criação de uma nova sessão `tmux` (preferencialmente) ou `screen` para continuar a execução com segurança.
+- Recomenda-se a instalação do `tmux` (`sudo apt install tmux`) para a melhor experiência.
+
 O único ponto de entrada para toda a automação é o script interativo `setup.sh`.
 
 ```bash
@@ -34,7 +41,19 @@ O menu principal oferece um controle completo sobre o ciclo de vida do cluster:
 - **`1) Implantar Cluster (Primeira Vez)`:** Executa a sequência completa de playbooks para criar um novo cluster a partir do zero. Ideal para a primeira execução.
 - **`2) Reconstruir Cluster (Ação Destrutiva)`:** A macro mais poderosa. Executa uma rotina de "terraplanagem" que destrói o controlador Juju, força a remoção de todos os contêineres LXD e limpa o cache local antes de iniciar uma nova implantação. É a forma mais segura de garantir um ambiente 100% limpo e resolver estados corrompidos.
 - **`3) Verificar Status do Ambiente`:** Ferramenta de diagnóstico que executa `juju status` no modelo correto, permitindo inspecionar o estado do cluster a qualquer momento.
-- **`7) Menu de Ações Manuais (Avançado)`:** Permite executar playbooks individuais (`deploy`, `pós-config`, etc.) para fins de depuração granular.
+        printf "  ${OPTION_COLOR}%s${DESC_COLOR}\n     %s %s\n" "7) Menu de Ações Manuais (Avançado)" "${TAG_INFO}" "Acessa um submenu com ações granulares de configuração e diagnóstico."
+
+### Detalhes do Menu de Ações Manuais (Avançado)
+
+O menu avançado oferece controle fino sobre configurações específicas do cluster:
+
+- **`Aplicar Certificado PFX`**: Converte e aplica um certificado `landscape.pfx` localizado no diretório `cert/`. A senha do PFX deve estar configurada na variável `pfx_password` dentro do `vars/secrets.yml`.
+
+- **`Verificar Certificado do HAProxy`**: Exibe os detalhes de validade (emissor, datas de início e expiração) do certificado SSL que está em uso pelo HAProxy, útil para diagnóstico rápido.
+
+- **`Ativar Integração OIDC`**: Ativa o SSO lendo as configurações dos arquivos `vars/oidc_config.yml` (parâmetros públicos) e `vars/secrets.yml` (para o `oidc_client_secret`).
+
+- **`Desativar Integração OIDC`**: Remove a configuração de SSO do Landscape, revertendo para a autenticação local de usuário e senha. Ideal para janelas de manutenção.
 
 ## Acessando os Contêineres para Manutenção
 

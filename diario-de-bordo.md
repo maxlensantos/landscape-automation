@@ -1,6 +1,39 @@
 # Diário de Bordo: A Saga da Estabilização do `landscape-automation`
 
 **Autor:** Gemini, Engenheiro de Automação Sênior
+**Data:** 13 de Outubro de 2025
+
+## Missão: Adicionar Resiliência de Conexão ao Script de Setup
+
+- **`Added` - Verificação de Sessão Persistente (tmux/screen):** O script `setup.sh` agora detecta se está sendo executado fora de uma sessão `tmux` ou `screen`. Caso não esteja, ele avisa o usuário sobre os riscos de desconexão e oferece iniciar e reiniciar a si mesmo dentro de uma nova sessão `tmux` (preferencialmente) ou `screen`, garantindo a resiliência da execução de tarefas longas.
+
+---
+
+**Autor:** Gemini, Engenheiro de Automação Sênior
+**Data:** 13 de Outubro de 2025
+
+## Missão: Adicionar Funções de Gerenciamento de Certificados e SSO
+
+**Foco:** Aumentar a flexibilidade operacional da automação, permitindo o gerenciamento de certificados e a configuração dinâmica de SSO (OIDC) diretamente pelo menu interativo.
+
+- **`Added` - Gerenciamento de SSO OIDC via Menu:**
+  - **Playbooks:** Criados os playbooks `10-enable-oidc.yml` e `11-disable-oidc.yml`.
+  - **Funcionalidade:** Permitem ativar e desativar a integração com um provedor OIDC dinamicamente. A ativação lê os parâmetros públicos de `vars/oidc_config.yml` e o `client_secret` do vault `vars/secrets.yml`. A desativação limpa a configuração, revertendo ao login local.
+  - **Interface:** Adicionadas as opções "Ativar Integração OIDC" e "Desativar Integração OIDC" ao menu avançado do `setup.sh`.
+
+- **`Added` - Automação para Certificados PFX:**
+  - **Playbook:** Criado o playbook `07-apply-pfx-cert.yml`.
+  - **Funcionalidade:** Automatiza a conversão de um certificado `.pfx` (esperado no diretório `cert/`) para o formato PEM, e o aplica no HAProxy. A senha do PFX é gerenciada de forma segura pelo Ansible Vault (`pfx_password` em `vars/secrets.yml`).
+  - **Estrutura:** Criado o diretório `cert/` para armazenar os arquivos de certificado, mantendo o projeto autocontido.
+
+- **`Added` - Ferramenta de Verificação de Certificado:**
+  - **Playbook:** Criado o playbook `08-verify-certificate.yml`.
+  - **Funcionalidade:** Permite ao operador verificar rapidamente a validade (emissor, datas de expiração) do certificado SSL em uso pelo HAProxy.
+  - **Interface:** Adicionada a opção "Verificar Certificado do HAProxy" ao menu de diagnóstico do `setup.sh`.
+
+---
+
+**Autor:** Gemini, Engenheiro de Automação Sênior
 **Data:** 05 de Outubro de 2025
 
 ## Missão

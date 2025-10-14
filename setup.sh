@@ -229,6 +229,8 @@ advanced_menu() {
         if is_playbook_implemented "03-deploy-application.yml"; then actions+=("Implantar Aplicação"); fi
         if is_playbook_implemented "05-post-config.yml"; then actions+=("Aplicar Pós-Config"); fi
         if is_playbook_implemented "07-apply-pfx-cert.yml"; then actions+=("Aplicar Certificado PFX"); fi
+        if is_playbook_implemented "10-enable-oidc.yml"; then actions+=("Ativar Integração OIDC"); fi
+        if is_playbook_implemented "11-disable-oidc.yml"; then actions+=("Desativar Integração OIDC"); fi
         actions+=("Voltar ao Menu Principal")
 
         for i in "${!actions[@]}"; do
@@ -250,6 +252,8 @@ advanced_menu() {
             "Implantar Aplicação") run_playbook "03-deploy-application.yml"; pause_and_continue; ;;
             "Aplicar Pós-Config") run_playbook "05-post-config.yml"; pause_and_continue; ;;
             "Aplicar Certificado PFX") run_playbook "07-apply-pfx-cert.yml"; pause_and_continue; ;;
+            "Ativar Integração OIDC") run_playbook "10-enable-oidc.yml"; pause_and_continue; ;;
+            "Desativar Integração OIDC") run_playbook "11-disable-oidc.yml"; pause_and_continue; ;;
             "Voltar ao Menu Principal") return ;; 
         esac
     done
@@ -333,7 +337,46 @@ esac
 }
 
 # --- Ponto de Entrada do Script ---
+
+ensure_persistent_session() {
+    # Se já estivermos em tmux ou screen, não faça nada.
+    if [ -n "${TMUX-}" ] || [ -n "${STY-}" ]; then
+        return 0
+    fi
+
+    # Se não estivermos, ofereça iniciar uma sessão.
+    echo -e "${TAG_WARN} AVISO: Você não está em uma sessão 'tmux' ou 'screen'." >&2
+    echo -e "${TAG_INFO} A execução de playbooks longos pode ser interrompida se sua conexão SSH cair." >&2
+    read -p "$(echo -e "${TAG_ACTION} Deseja iniciar uma nova sessão 'tmux' para garantir a execução? (S/n): ${RESET}")" response
+    response=${response:-S} # Padrão para Sim
+
+    if [[ ! "$response" =~ ^[Ss]$ ]]; then
+        echo -e "${TAG_INFO} Ok, continuando sem uma sessão persistente. Cuidado com desconexões!${RESET}"
+        sleep 2
+        return 0
+    fi
+
+    # Tenta usar tmux primeiro, se não, screen como fallback.
+    if command -v tmux &> /dev/null; then
+        echo -e "${GREEN}Iniciando nova sessão com 'tmux'... O script será reiniciado dentro dela.${RESET}"
+        sleep 1
+        # O exec substitui o processo atual pelo tmux, que então executa o script.
+        exec tmux new-session -s "landscape-automation" "$0" "$@"
+    elif command -v screen &> /dev/null; then
+        echo -e "${GREEN}TMUX não encontrado. Iniciando nova sessão com 'screen'... O script será reiniciado dentro dela.${RESET}"
+        sleep 1
+        exec screen -S "landscape-automation" "$0" "$@"
+    else
+        echo -e "${DANGER_COLOR}ERRO: Nem 'tmux' nem 'screen' foram encontrados. Por favor, instale um deles.${RESET}"
+        echo -e "${TAG_INFO} Sugestão: sudo apt update && sudo apt install tmux${RESET}"
+        exit 1
+    fi
+}
+
 main() {
+    # Garante que o script rode em uma sessão persistente
+    ensure_persistent_session "$@"
+
     # Valida a senha do sudo no início para evitar múltiplos prompts
     echo -e "${TAG_ACTION} A execução pode exigir privilégios de administrador (sudo).${RESET}"
     sudo -v

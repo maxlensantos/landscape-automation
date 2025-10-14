@@ -1,0 +1,12 @@
+---
+- name: Disable OIDC Integration
+  hosts: all
+  connection: local
+  gather_facts: no
+
+  tasks:
+    - name: "Remove OIDC configuration from landscape-server"
+      ansible.builtin.command:
+        cmd: "sg lxd -c \"juju config -m {{ model_name }} landscape-server config=''\""
+      changed_when: true
+

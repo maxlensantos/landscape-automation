@@ -1,0 +1,11 @@
+# vars/oidc_config.yml
+#
+# Cole aqui os parâmetros PÚBLICOS da sua configuração OIDC.
+# O 'oidc_client_secret' deve ser colocado no arquivo 'vars/secrets.yml' e criptografado.
+#
+# Descomente e preencha as linhas abaixo com os dados do seu provedor.
+#
+#oidc_client_id: "08107_h_landscape_homolga"
+#oidc_provider_url: "https://login.serpro.gov.br/auth/realms/serpro"
+#oidc_display_name: "Login via SSO Corporativo"
+#oidc_scope: "openid email profile"

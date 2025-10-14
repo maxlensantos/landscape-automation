@@ -8,38 +8,50 @@
     - ../vars/main.yml
     - ../vars/secrets.yml
 
+  vars:
+    pfx_vault_path: "cert/landscape.pfx"
+    pfx_temp_path: "/tmp/decrypted_landscape.pfx"
+    key_temp_path: "/tmp/landscape.key"
+    cert_temp_path: "/tmp/landscape.crt"
+
   tasks:
-    - name: "Check if PFX file exists"
+    - name: "Check if PFX vault file exists"
       ansible.builtin.stat:
-        path: "../landscape.pfx"
+        path: "{{ pfx_vault_path }}"
       register: pfx_file_stat
 
-    - name: "Fail if PFX file is not found"
+    - name: "Fail if PFX vault file is not found"
       ansible.builtin.fail:
-        msg: "ERRO: Arquivo '../landscape.pfx' não encontrado. Certifique-se de que ele está no diretório /home/s779929545/projetos/."
+        msg: "ERRO: Arquivo '{{ pfx_vault_path }}' não encontrado. Certifique-se de que ele existe e está criptografado com ansible-vault."
       when: not pfx_file_stat.stat.exists
 
-    - name: "Extract private key from PFX"
+    - name: "Decrypt PFX file to a temporary location"
+      ansible.builtin.copy:
+        src: "{{ pfx_vault_path }}"
+        dest: "{{ pfx_temp_path }}"
+        mode: '0600'
+
+    - name: "Extract private key from temporary PFX"
       ansible.builtin.shell:
         cmd: >
-          openssl pkcs12 -in ../landscape.pfx -nocerts -out /tmp/landscape.key -nodes
+          openssl pkcs12 -in {{ pfx_temp_path }} -nocerts -out {{ key_temp_path }} -nodes
           -passin pass:'{{ pfx_password }}'
       changed_when: true
 
-    - name: "Extract public certificate from PFX"
+    - name: "Extract public certificate from temporary PFX"
       ansible.builtin.shell:
         cmd: >
-          openssl pkcs12 -in ../landscape.pfx -clcerts -nokeys -out /tmp/landscape.crt
+          openssl pkcs12 -in {{ pfx_temp_path }} -clcerts -nokeys -out {{ cert_temp_path }}
           -passin pass:'{{ pfx_password }}'
       changed_when: true
 
     - name: "Read and b64encode certificate file"
       ansible.builtin.set_fact:
-        cert_b64: "{{ lookup('file', '/tmp/landscape.crt') | b64encode }}"
+        cert_b64: "{{ lookup('file', cert_temp_path) | b64encode }}"
 
     - name: "Read and b64encode private key file"
       ansible.builtin.set_fact:
-        key_b64: "{{ lookup('file', '/tmp/landscape.key') | b64encode }}"
+        key_b64: "{{ lookup('file', key_temp_path) | b64encode }}"
 
     - name: "Apply SSL configuration to HAProxy"
       ansible.builtin.command:
@@ -49,10 +61,11 @@
           ssl_key='{{ key_b64 }}'"
       changed_when: true
 
-    - name: "Clean up temporary files"
+    - name: "Clean up all temporary files"
       ansible.builtin.file:
         path: "{{ item }}"
         state: absent
       loop:
-        - /tmp/landscape.key
-        - /tmp/landscape.crt
+        - "{{ pfx_temp_path }}"
+        - "{{ key_temp_path }}"
+        - "{{ cert_temp_path }}"
