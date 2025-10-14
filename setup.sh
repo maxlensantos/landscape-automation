@@ -96,9 +96,6 @@ is_playbook_implemented() {
 }
 
 run_playbook() {
-    # Revalida o ticket do sudo para garantir que não expire durante a execução.
-    sudo -v
-
     local playbook_file="$1"
     local extra_playbook_args=("${@:2}")
     

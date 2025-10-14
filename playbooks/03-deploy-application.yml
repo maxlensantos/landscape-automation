@@ -39,12 +39,23 @@
                 ssl_cert: {{ cert_content_b64 }}
                 ssl_key: {{ key_content_b64 }}
 
-    - name: Add a model for the landscape application (idempotent)
+    - name: "Start creating the Juju model (asynchronously)"
       ansible.builtin.command: "sg lxd -c 'juju add-model {{ model_name }}'"
-      register: add_model_result
-      failed_when: "add_model_result.rc != 0 and 'already exists' not in add_model_result.stderr"
-      changed_when: "'already exists' not in add_model_result.stderr"
+      async: 300  # Max 5 minutes timeout
+      poll: 0     # Return immediately
+      register: add_model_async
+      changed_when: false
       become: no
+
+    - name: "Wait for model creation to complete"
+      ansible.builtin.async_status:
+        jid: add_model_async.jid
+      register: job_result
+      until: job_result.finished
+      retries: 60 # 60 retries * 5s delay = 5 minutes
+      delay: 5
+      changed_when: "'already exists' not in (job_result.stderr | default(''))"
+      failed_when: "job_result.rc != 0 and 'already exists' not in (job_result.stderr | default(''))"
 
     - name: Deploy Landscape via official stable bundle
       when: not (is_ha_cluster | bool)

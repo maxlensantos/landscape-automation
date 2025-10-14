@@ -8,13 +8,24 @@
     max_retries: 30 # 5 minutes (30 retries * 10s delay)
 
   tasks:
-    - name: "Forcefully kill the Juju controller"
+    - name: "Start forcefully killing the Juju controller (asynchronously)"
       ansible.builtin.command: "sg lxd -c 'juju kill-controller {{ controller_name }} --no-prompt'"
-      register: kill_result
-      failed_when: "kill_result.rc != 0 and 'not found' not in kill_result.stderr"
-      changed_when: "'destroyed' in kill_result.stdout"
+      async: 600  # 10 minutos de timeout
+      poll: 0
+      register: kill_async
       become: no
-      ignore_errors: true # Ignore if controller doesn't exist
+      ignore_errors: true # Se o controller não existe, o comando falha, o que é um sucesso para nós.
+
+    - name: "Wait for controller to be killed"
+      ansible.builtin.async_status:
+        jid: kill_async.jid
+      register: job_result
+      until: job_result.finished
+      retries: 120 # 120 retries * 5s de espera = 10 minutos
+      delay: 5
+      become: no
+      ignore_errors: true # Ignoramos erros aqui também.
+
 
     - name: "List all LXD containers"
       ansible.builtin.command: "lxc list --format=json"
