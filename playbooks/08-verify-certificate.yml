@@ -1,0 +1,35 @@
+---
+- name: Verify HAProxy Certificate Validity
+  hosts: all
+  connection: local
+  gather_facts: no
+
+  tasks:
+    - name: "Get HAProxy SSL certificate from Juju config"
+      ansible.builtin.command:
+        cmd: "sg lxd -c 'juju config -m {{ model_name }} haproxy ssl_cert'"
+      register: juju_cert_b64
+      changed_when: false
+
+    - name: "Fail if certificate is not configured"
+      ansible.builtin.fail:
+        msg: "O certificado SSL não parece estar configurado no HAProxy para o modelo '{{ model_name }}'."
+      when: juju_cert_b64.stdout == "" or "ERROR" in juju_cert_b64.stderr
+
+    - name: "Decode certificate and extract details using OpenSSL"
+      ansible.builtin.shell:
+        cmd: |
+          echo "{{ juju_cert_b64.stdout }}" | base64 --decode | openssl x509 -noout -subject -issuer -startdate -enddate
+      register: cert_details
+      changed_when: false
+
+    - name: "Display certificate details"
+      ansible.builtin.debug:
+        msg: |
+          ######################################################################
+          #             DETALHES DO CERTIFICADO DO HAPROXY                     #
+          ######################################################################
+          
+          {{ cert_details.stdout | indent(10) }}
+          
+          ######################################################################

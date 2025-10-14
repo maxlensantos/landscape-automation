@@ -1,0 +1,4 @@
+# converge.yml
+---
+- name: Converge
+  import_playbook: ../../00-prepare-vms.yml

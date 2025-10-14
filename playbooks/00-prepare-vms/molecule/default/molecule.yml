@@ -1,0 +1,17 @@
+# molecule.yml
+---
+dependency:
+  name: galaxy
+driver:
+  name: docker
+platforms:
+  - name: instance
+    image: ubuntu:22.04
+    privileged: true # Required for LXD/Snapd inside Docker
+    pre_build_image: true
+provisioner:
+  name: ansible
+  playbooks:
+    converge: converge.yml
+verifier:
+  name: ansible

@@ -182,7 +182,7 @@ select_environment() {
                 echo ""
                 echo -e "    ---------------------------------------------------------------"
                 echo ""
-                echo -e "      Versão           : 2.0 (Estável)"
+                echo -e "      Versão           : 2.1 (Estável)"
                 echo -e "      Mantenedores     : Equipe OPDTV | DIOPE/SUPOP/OPDIG"
                 echo -e "      Empresa          : SERPRO"
                 echo -e "      Canal de Suporte : lista-supop-opdig-opdtv @grupos.serpro.gov.br"
@@ -228,6 +228,7 @@ advanced_menu() {
         if is_playbook_implemented "02-bootstrap-juju.yml"; then actions+=("Instalar Juju"); fi
         if is_playbook_implemented "03-deploy-application.yml"; then actions+=("Implantar Aplicação"); fi
         if is_playbook_implemented "05-post-config.yml"; then actions+=("Aplicar Pós-Config"); fi
+        if is_playbook_implemented "07-apply-pfx-cert.yml"; then actions+=("Aplicar Certificado PFX"); fi
         actions+=("Voltar ao Menu Principal")
 
         for i in "${!actions[@]}"; do
@@ -248,6 +249,7 @@ advanced_menu() {
             "Instalar Juju") run_playbook "02-bootstrap-juju.yml"; pause_and_continue; ;;
             "Implantar Aplicação") run_playbook "03-deploy-application.yml"; pause_and_continue; ;;
             "Aplicar Pós-Config") run_playbook "05-post-config.yml"; pause_and_continue; ;;
+            "Aplicar Certificado PFX") run_playbook "07-apply-pfx-cert.yml"; pause_and_continue; ;;
             "Voltar ao Menu Principal") return ;; 
         esac
     done
@@ -267,15 +269,16 @@ main_menu() {
 
         echo -e "\n${HEADER_COLOR}-- Diagnóstico --${RESET}"
         printf "  ${OPTION_COLOR}%s${DESC_COLOR}\n     %s %s\n" "3) Verificar Status do Ambiente" "${TAG_INFO}" "Exibe o status dos modelos e aplicações Juju."
-        printf "  ${OPTION_COLOR}%s${DESC_COLOR}\n     %s %s\n" "4) Executar Health Check" "${TAG_INFO}" "Executa verificação detalhada da saúde do cluster."
+        printf "  ${OPTION_COLOR}%s${DESC_COLOR}\n     %s %s\n" "4) Verificar Certificado do HAProxy" "${TAG_INFO}" "Exibe os detalhes de validade do certificado SSL em uso."
+        printf "  ${OPTION_COLOR}%s${DESC_COLOR}\n     %s %s\n" "5) Executar Health Check" "${TAG_INFO}" "Executa verificação detalhada da saúde do cluster."
 
         echo -e "\n${DANGER_COLOR}-- Operações Destrutivas --${RESET}"
-        printf "  ${DANGER_COLOR}%s${DESC_COLOR}\n     %s %s\n" "5) Demolir Cluster" "${TAG_CRITICAL}" "Ação irreversível. Remove todos os recursos do cluster."
-        printf "  ${DANGER_COLOR}%s${DESC_COLOR}\n     %s %s\n" "6) Forçar Demolição (Recuperação)" "${TAG_CRITICAL}" "Usar apenas se a demolição normal falhar. Risco de recursos órfãos."
+        printf "  ${DANGER_COLOR}%s${DESC_COLOR}\n     %s %s\n" "6) Demolir Cluster" "${TAG_CRITICAL}" "Ação irreversível. Remove todos os recursos do cluster."
+        printf "  ${DANGER_COLOR}%s${DESC_COLOR}\n     %s %s\n" "7) Forçar Demolição (Recuperação)" "${TAG_CRITICAL}" "Usar apenas se a demolição normal falhar. Risco de recursos órfãos."
 
         echo -e "\n${HEADER_COLOR}-- Outras Opções --${RESET}"
-        printf "  ${OPTION_COLOR}%s${DESC_COLOR}\n" "7) Menu de Ações Manuais (Avançado)"
-        printf "  ${OPTION_COLOR}%s${DESC_COLOR}\n" "8) Sair"
+        printf "  ${OPTION_COLOR}%s${DESC_COLOR}\n" "8) Menu de Ações Manuais (Avançado)"
+        printf "  ${OPTION_COLOR}%s${DESC_COLOR}\n" "9) Sair"
         echo "---------------------------------------------------------------------"
         echo -e "${DESC_COLOR}SERPRO | DIOPE/SUPOP/OPDIG/OPDTV${RESET}"
         echo "---------------------------------------------------------------------"
@@ -306,22 +309,24 @@ main_menu() {
                     echo -e "----------------------------------------------------------------------${RESET}"
                 fi
                 pause_and_continue; ;;
-            4)  # Health Check
+            4)  # Verificar Certificado
+                run_playbook "08-verify-certificate.yml"; pause_and_continue; ;;
+            5)  # Health Check
                 run_playbook "98-verify-health.yml"; pause_and_continue; ;;
-            5)  # Demolir
+            6)  # Demolir
                 if confirm_action "Você tem CERTEZA que deseja DEMOLIR o Cluster ${ENV_NAME}?"; then
                     run_playbook "99-destroy-application.yml"
                 fi
                 pause_and_continue; ;;
-            6)  # Forçar Demolição
+            7)  # Forçar Demolição
                 if confirm_action "AÇÃO CRÍTICA. Confirma a demolição forçada do Cluster ${ENV_NAME}?"; then
                     echo -e "${DANGER_COLOR}--- Executando Demolição Forçada ---${RESET}"
                     local model_name=$(grep -E '^model_name=' "${INVENTORY_FILE}" | cut -d'=' -f2)
                     sg lxd -c "juju destroy-model '${model_name}' --force --destroy-storage --no-prompt" || echo -e "${WARN_COLOR}Falha ao forçar a demolição (o modelo pode já ter sido removido).${RESET}"
                 fi
                 pause_and_continue; ;;
-            7) advanced_menu; ;; 
-            8) exit 0; ;; 
+            8) advanced_menu; ;; 
+            9) exit 0; ;; 
             *) echo -e "\n${DANGER_COLOR}Opção inválida.${RESET}"; pause_and_continue; ;; 
 esac
     done

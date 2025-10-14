@@ -1,0 +1,23 @@
+# verify.yml
+---
+- name: Verify
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Check if python3 is installed
+      ansible.builtin.command: which python3
+      register: python3_check
+      changed_when: false
+      failed_when: python3_check.rc != 0
+
+    - name: Check if snapd is installed
+      ansible.builtin.command: which snap
+      register: snapd_check
+      changed_when: false
+      failed_when: snapd_check.rc != 0
+
+    - name: Check if python3-pip is installed
+      ansible.builtin.command: python3 -m pip --version
+      register: pip_check
+      changed_when: false
+      failed_when: pip_check.rc != 0
