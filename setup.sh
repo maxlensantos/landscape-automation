@@ -92,7 +92,7 @@ is_playbook_implemented() {
 }
 
 run_playbook() {
-    # Valida o ticket do sudo uma vez antes de começar.
+    # Revalida o ticket do sudo para garantir que não expire durante a execução.
     sudo -v
 
     local playbook_file="$1"
@@ -105,34 +105,26 @@ run_playbook() {
 
     echo -e "\n${PROMPT_COLOR}Executando o playbook: ${playbook_file} no ambiente: ${ENV_NAME}${RESET}"
     
-    # Salva qualquer trap EXIT que já exista.
-    local old_trap
-    old_trap=$(trap -p EXIT)
-
-    # Inicia um loop de keep-alive para o sudo APENAS durante a execução do playbook.
-    while true; do sudo -n true; sleep 60; done &>/dev/null &
-    local SUDO_KEEPALIVE_PID=$!
-    # Garante que o keep-alive seja morto mesmo se o usuário cancelar (Ctrl+C).
-    trap "kill $SUDO_KEEPALIVE_PID &>/dev/null" EXIT
-
-    # Prepara os argumentos para o ansible-playbook
     local ansible_args=()
+    # Lógica de senha do Vault, agora local para esta função
     if grep -q "\$ANSIBLE_VAULT;" "vars/secrets.yml" 2>/dev/null; then
         if [ -f "$VAULT_PASS_FILE" ]; then
             ansible_args+=("--vault-password-file" "$VAULT_PASS_FILE")
-        elif [ -n "${TEMP_VAULT_FILE-}" ]; then
+        elif [ -z "${TEMP_VAULT_FILE-}" ]; then
+            read -s -p "Vault password: " VAULT_PASSWORD_VAR
+            echo
+            export TEMP_VAULT_FILE
+            TEMP_VAULT_FILE=$(mktemp)
+            echo "$VAULT_PASSWORD_VAR" > "$TEMP_VAULT_FILE"
+            trap 'rm -f "$TEMP_VAULT_FILE"' EXIT
             ansible_args+=("--vault-password-file" "$TEMP_VAULT_FILE")
         else
-            ansible_args+=("--ask-vault-pass")
+            ansible_args+=("--vault-password-file" "$TEMP_VAULT_FILE")
         fi
     fi
     
     local playbook_exit_code=0
     ansible-playbook -i "${INVENTORY_FILE}" "playbooks/${playbook_file}" "${ansible_args[@]}" "${extra_playbook_args[@]}" || playbook_exit_code=$?
-
-    # Para o processo de keep-alive e restaura o trap original.
-    kill $SUDO_KEEPALIVE_PID &>/dev/null
-    eval "$old_trap" # Restaura o trap que existia antes.
 
     if [ $playbook_exit_code -eq 0 ]; then
         echo -e "${GREEN}✓ Playbook '${playbook_file}' concluído com sucesso.${RESET}"
@@ -478,24 +470,21 @@ ensure_persistent_session() {
 }
 
 main() {
-    # Chamada temporariamente desativada para depuração.
-    # ensure_persistent_session "$@"
+    # Garante que o script rode em uma sessão persistente
+    ensure_persistent_session "$@"
 
-    # Valida a senha do sudo no início para evitar múltiplos prompts
-    echo -e "${TAG_ACTION} A execução pode exigir privilégios de administrador (sudo).${RESET}"
-    sudo -v
-    echo ""
-
-    # Lida com a senha do Vault de forma centralizada
-    if grep -q "\$ANSIBLE_VAULT;" "vars/secrets.yml" 2>/dev/null && [ ! -f "$VAULT_PASS_FILE" ]; then
-        read -s -p "Vault password: " VAULT_PASSWORD_VAR
-        echo
-        TEMP_VAULT_FILE=$(mktemp)
-        echo "$VAULT_PASSWORD_VAR" > "$TEMP_VAULT_FILE"
-        # Garante que o arquivo temporário seja limpo ao sair
-        trap 'rm -f "$TEMP_VAULT_FILE"' EXIT
-        export TEMP_VAULT_FILE
+    echo -e "${TAG_ACTION}Verificando privilégios de administrador (sudo)...${RESET}"
+    # Tenta renovar o ticket do sudo silenciosamente. Se falhar, pede a senha.
+    if ! sudo -n true 2>/dev/null; then
+        echo -e "${TAG_INFO}A execução pode exigir privilégios de administrador.${RESET}"
+        sudo -v
+        if [ $? -ne 0 ]; then
+            echo -e "${DANGER_COLOR}Falha ao obter privilégios de sudo. Saindo.${RESET}"
+            exit 1
+        fi
     fi
+    echo -e "${GREEN}Privilégios de sudo verificados.${RESET}"
+    echo ""
 
     if [ ! -d "playbooks" ] || [ ! -d "inventory" ]; then
         die "Este script deve ser executado a partir do diretório raiz 'landscape-automation'."
