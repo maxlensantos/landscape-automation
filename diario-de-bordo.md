@@ -3,6 +3,15 @@
 **Autor:** Gemini, Engenheiro de Automação Sênior
 **Data:** 13 de Outubro de 2025
 
+## Missão: Aprimorar a Experiência de Sessão Persistente
+
+- **`Added` - Reconexão a Sessões Existentes:** A função `ensure_persistent_session` no `setup.sh` foi aprimorada. Antes de criar uma nova sessão, ela agora verifica se já existe uma sessão `tmux` ou `screen` desconectada com o nome `landscape-automation`. Em caso afirmativo, oferece ao usuário a opção de se reconectar, evitando a criação de sessões duplicadas e permitindo a retomada de trabalhos interrompidos.
+
+---
+
+**Autor:** Gemini, Engenheiro de Automação Sênior
+**Data:** 13 de Outubro de 2025
+
 ## Missão: Adicionar Resiliência de Conexão ao Script de Setup
 
 - **`Added` - Verificação de Sessão Persistente (tmux/screen):** O script `setup.sh` agora detecta se está sendo executado fora de uma sessão `tmux` ou `screen`. Caso não esteja, ele avisa o usuário sobre os riscos de desconexão e oferece iniciar e reiniciar a si mesmo dentro de uma nova sessão `tmux` (preferencialmente) ou `screen`, garantindo a resiliência da execução de tarefas longas.

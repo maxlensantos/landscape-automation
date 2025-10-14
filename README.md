@@ -21,8 +21,12 @@ Esta automação utiliza uma abordagem híbrida, combinando **Ansible** para orq
 
 Para proteger a execução de tarefas longas contra desconexões de rede, o script `setup.sh` possui uma verificação de cortesia. Ao ser iniciado, ele detecta se você está em uma sessão de terminal persistente (`tmux` ou `screen`).
 
-- Se não estiver, ele irá alertá-lo e oferecer a criação de uma nova sessão `tmux` (preferencialmente) ou `screen` para continuar a execução com segurança.
-- Recomenda-se a instalação do `tmux` (`sudo apt install tmux`) para a melhor experiência.
+- **Reconexão Automática:** Se uma sessão anterior chamada `landscape-automation` for encontrada, o script perguntará se você deseja se reconectar a ela, permitindo que você continue exatamente de onde parou.
+- **Criação de Sessão:** Se nenhuma sessão for encontrada, ele irá alertá-lo e oferecer a criação de uma nova sessão `tmux` (preferencialmente) ou `screen` para continuar a execução com segurança.
+- **Dashboard (com tmux):** Ao criar uma nova sessão com `tmux`, o script automaticamente divide a tela, mostrando o menu no painel superior e o `juju status --watch 1s` no painel inferior.
+- **Instalação Automática:** Se nem `tmux` nem `screen` estiverem presentes, o script se oferecerá para instalar o `tmux` para você.
+
+Recomenda-se a instalação do `tmux` (`sudo apt install tmux`) para a melhor experiência.
 
 O único ponto de entrada para toda a automação é o script interativo `setup.sh`.
 

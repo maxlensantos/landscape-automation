@@ -46,7 +46,7 @@
           print(json.dumps(output))
           sys.exit(0 if output["all_done"] else 1)
       '
-    stdin: "{{ juju_status_json.stdout }}"
+    stdin: "{{ juju_status_json.stdout | from_yaml | to_json }}"
   register: health_check_result
   changed_when: false
   failed_when: false # We handle the exit code manually

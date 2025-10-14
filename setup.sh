@@ -339,15 +339,43 @@ esac
 # --- Ponto de Entrada do Script ---
 
 ensure_persistent_session() {
+    # Se o script for chamado com um marcador interno, não faça nada para evitar loop infinito.
+    if [[ "${1-}" == "--no-tmux-wrap" ]]; then
+        shift
+        return 0
+    fi
+
     # Se já estivermos em tmux ou screen, não faça nada.
     if [ -n "${TMUX-}" ] || [ -n "${STY-}" ]; then
         return 0
     fi
 
-    # Se não estivermos, ofereça iniciar uma sessão.
-    echo -e "${TAG_WARN} AVISO: Você não está em uma sessão 'tmux' ou 'screen'." >&2
+    # Verifica se existe uma sessão tmux destacada com o nome esperado.
+    if command -v tmux &> /dev/null && tmux has-session -t "landscape-automation" 2>/dev/null; then
+        echo -e "${TAG_INFO} Encontrei uma sessão 'tmux' existente chamada 'landscape-automation'." >&2
+        read -p "$(echo -e "${TAG_ACTION} Deseja se reconectar a ela? (S/n): ${RESET}")" response
+        response=${response:-S}
+        if [[ "$response" =~ ^[Ss]$ ]]; then
+            echo -e "${GREEN}Reconectando à sessão 'tmux'...${RESET}"
+            sleep 1
+            exec tmux attach-session -t "landscape-automation"
+        fi
+    # Senão, verifica se existe uma sessão screen
+    elif command -v screen &> /dev/null && screen -ls | grep -q "\.landscape-automation\s"; then
+        echo -e "${TAG_INFO} Encontrei uma sessão 'screen' existente chamada 'landscape-automation'." >&2
+        read -p "$(echo -e "${TAG_ACTION} Deseja se reconectar a ela? (S/n): ${RESET}")" response
+        response=${response:-S}
+        if [[ "$response" =~ ^[Ss]$ ]]; then
+            echo -e "${GREEN}Reconectando à sessão 'screen'...${RESET}"
+            sleep 1
+            exec screen -r "landscape-automation"
+        fi
+    fi
+
+    # Se não houver sessão para reconectar, ou o usuário disse não, oferece para criar uma nova.
+    echo -e "${TAG_WARN} AVISO: Nenhuma sessão ativa encontrada. Sua sessão atual não é persistente." >&2
     echo -e "${TAG_INFO} A execução de playbooks longos pode ser interrompida se sua conexão SSH cair." >&2
-    read -p "$(echo -e "${TAG_ACTION} Deseja iniciar uma nova sessão 'tmux' para garantir a execução? (S/n): ${RESET}")" response
+    read -p "$(echo -e "${TAG_ACTION} Deseja iniciar uma nova sessão segura com 'tmux'? (S/n): ${RESET}")" response
     response=${response:-S} # Padrão para Sim
 
     if [[ ! "$response" =~ ^[Ss]$ ]]; then
@@ -358,18 +386,38 @@ ensure_persistent_session() {
 
     # Tenta usar tmux primeiro, se não, screen como fallback.
     if command -v tmux &> /dev/null; then
-        echo -e "${GREEN}Iniciando nova sessão com 'tmux'... O script será reiniciado dentro dela.${RESET}"
+        echo -e "${GREEN}Iniciando dashboard com 'tmux'...${RESET}"
         sleep 1
-        # O exec substitui o processo atual pelo tmux, que então executa o script.
-        exec tmux new-session -s "landscape-automation" "$0" "$@"
+        exec tmux new-session -s "landscape-automation" "$0 --no-tmux-wrap" \; \
+             split-window -v "juju status --watch 1s" \; \
+             select-pane -t 0
     elif command -v screen &> /dev/null; then
-        echo -e "${GREEN}TMUX não encontrado. Iniciando nova sessão com 'screen'... O script será reiniciado dentro dela.${RESET}"
+        echo -e "${GREEN}TMUX não encontrado. Iniciando sessão simples com 'screen'...${RESET}"
         sleep 1
         exec screen -S "landscape-automation" "$0" "$@"
     else
-        echo -e "${DANGER_COLOR}ERRO: Nem 'tmux' nem 'screen' foram encontrados. Por favor, instale um deles.${RESET}"
-        echo -e "${TAG_INFO} Sugestão: sudo apt update && sudo apt install tmux${RESET}"
-        exit 1
+        # Se nenhum dos dois for encontrado, oferece para instalar o tmux
+        echo -e "${TAG_WARN}AVISO: Nem 'tmux' nem 'screen' foram encontrados para criar uma sessão segura.${RESET}" >&2
+        read -p "$(echo -e "${TAG_ACTION}Deseja instalar o 'tmux' (recomendado) agora? (S/n): ${RESET}")" install_response
+        install_response=${install_response:-S}
+
+        if [[ "$install_response" =~ ^[Ss]$ ]]; then
+            echo -e "${TAG_INFO}Instalando o tmux...${RESET}"
+            if sudo apt update && sudo apt install -y tmux; then
+                echo -e "${GREEN}TMUX instalado com sucesso! Reiniciando o script dentro da nova sessão...${RESET}"
+                sleep 2
+                exec tmux new-session -s "landscape-automation" "$0 --no-tmux-wrap" \; \
+                     split-window -v "juju status --watch 1s" \; \
+                     select-pane -t 0
+            else
+                echo -e "${DANGER_COLOR}Falha ao instalar o tmux. Por favor, instale manualmente e execute o script novamente.${RESET}"
+                exit 1
+            fi
+        else
+            echo -e "${TAG_INFO}Ok, continuando sem uma sessão persistente. Cuidado com desconexões!${RESET}"
+            sleep 2
+            return 0
+        fi
     fi
 }
 
