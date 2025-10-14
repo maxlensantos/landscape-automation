@@ -429,13 +429,15 @@ ensure_persistent_session() {
     if command -v tmux &> /dev/null; then
         echo -e "${GREEN}Iniciando dashboard com 'tmux'...${RESET}"
         sleep 1
-        exec tmux new-session -s "landscape-automation" "$0 --no-tmux-wrap" \; \
+        tmux new-session -s "landscape-automation" "$0 --no-tmux-wrap" \; \
              split-window -v "juju status --watch 1s" \; \
              select-pane -t 0
+        exit 0 # Sai do script pai para deixar o tmux controlar o terminal
     elif command -v screen &> /dev/null; then
         echo -e "${GREEN}TMUX não encontrado. Iniciando sessão simples com 'screen'...${RESET}"
         sleep 1
-        exec screen -S "landscape-automation" "$0" "$@"
+        screen -S "landscape-automation" "$0" "$@"
+        exit 0 # Sai do script pai para deixar o screen controlar o terminal
     else
         # Se nenhum dos dois for encontrado, oferece para instalar o tmux
         echo -e "${TAG_WARN}AVISO: Nem 'tmux' nem 'screen' foram encontrados para criar uma sessão segura.${RESET}" >&2
