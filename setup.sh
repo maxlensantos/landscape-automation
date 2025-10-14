@@ -96,7 +96,6 @@ run_playbook() {
     sudo -v
 
     local playbook_file="$1"
-    # O primeiro argumento é o nome do playbook, o resto são argumentos extras.
     local extra_playbook_args=("${@:2}")
     
     if ! is_playbook_implemented "$playbook_file"; then
@@ -106,6 +105,10 @@ run_playbook() {
 
     echo -e "\n${PROMPT_COLOR}Executando o playbook: ${playbook_file} no ambiente: ${ENV_NAME}${RESET}"
     
+    # Salva qualquer trap EXIT que já exista.
+    local old_trap
+    old_trap=$(trap -p EXIT)
+
     # Inicia um loop de keep-alive para o sudo APENAS durante a execução do playbook.
     while true; do sudo -n true; sleep 60; done &>/dev/null &
     local SUDO_KEEPALIVE_PID=$!
@@ -114,8 +117,6 @@ run_playbook() {
 
     # Prepara os argumentos para o ansible-playbook
     local ansible_args=()
-    
-    # Lógica inteligente para a senha do Vault
     if grep -q "\$ANSIBLE_VAULT;" "vars/secrets.yml" 2>/dev/null; then
         if [ -f "$VAULT_PASS_FILE" ]; then
             ansible_args+=("--vault-password-file" "$VAULT_PASS_FILE")
@@ -126,13 +127,12 @@ run_playbook() {
         fi
     fi
     
-    # Executa o comando com todos os argumentos construídos
     local playbook_exit_code=0
     ansible-playbook -i "${INVENTORY_FILE}" "playbooks/${playbook_file}" "${ansible_args[@]}" "${extra_playbook_args[@]}" || playbook_exit_code=$?
 
-    # Para o processo de keep-alive e remove o trap.
+    # Para o processo de keep-alive e restaura o trap original.
     kill $SUDO_KEEPALIVE_PID &>/dev/null
-    trap - EXIT
+    eval "$old_trap" # Restaura o trap que existia antes.
 
     if [ $playbook_exit_code -eq 0 ]; then
         echo -e "${GREEN}✓ Playbook '${playbook_file}' concluído com sucesso.${RESET}"
