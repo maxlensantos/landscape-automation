@@ -92,9 +92,6 @@ is_playbook_implemented() {
 }
 
 run_playbook() {
-    # Revalida o ticket do sudo para garantir que não expire durante a execução.
-    sudo -v
-
     local playbook_file="$1"
     # O primeiro argumento é o nome do playbook, o resto são argumentos extras.
     local extra_playbook_args=("${@:2}")
@@ -432,6 +429,16 @@ main() {
     echo -e "${TAG_ACTION} A execução pode exigir privilégios de administrador (sudo).${RESET}"
     sudo -v
     echo ""
+
+    # Inicia um loop em background para manter o sudo vivo. O `sudo -n true` tenta
+    # rodar um comando sem pedir senha. Se o ticket estiver válido, ele o renova.
+    # Se expirar, ele falha silenciosamente, mas o próximo comando sudo real pedirá a senha.
+    # O nosso `sudo -v` inicial garante que o primeiro ticket seja válido.
+    while true; do sudo -n true; sleep 60; done &>/dev/null &
+    SUDO_KEEPALIVE_PID=$!
+    # Garante que o processo de keep-alive seja morto quando o script sair.
+    trap "kill $SUDO_KEEPALIVE_PID" EXIT
+
 
     # Lida com a senha do Vault de forma centralizada
     if grep -q "\$ANSIBLE_VAULT;" "vars/secrets.yml" 2>/dev/null && [ ! -f "$VAULT_PASS_FILE" ]; then
