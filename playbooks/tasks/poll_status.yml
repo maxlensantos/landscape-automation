@@ -64,7 +64,7 @@
     progress_info: "{{ health_check_result.stdout | from_json if health_check_result.stdout != '' else {'active': 0, 'total': 0} }}"
   when: health_check_result is defined
 
-- name: Display progress and live status
+- name: Display progress bar
   when: not all_apps_active
   ansible.builtin.shell: |
     active_units={{ progress_info.active | default(0) }}
@@ -76,19 +76,17 @@
         percent=0
     fi
 
-    bar_width=40
+    bar_width=30
     completed_width=$((percent * bar_width / 100))
-    bar=$(printf "%-${completed_width}s" "" | tr ' ' '❚')$(printf "%-$((bar_width - completed_width))s" "" | tr ' ' '-')
 
-    printf "\033[H\033[J"
-    echo "######################################################################"
-    echo "#  AGUARDANDO CLUSTER (TENTATIVA {{ retry_num }}/{{ max_iterations }}) - Timeout em ~{{ ((max_iterations - retry_num) * 5 / 60) | round }} min  #"
-    echo "######################################################################"
-    echo ""
-    echo " Progresso: [${bar}] ${percent}% (${active_units}/${total_units} unidades prontas)"
-    echo ""
+    filled_part=$(printf "%-${completed_width}s" "" | tr ' ' '❚')
+    empty_part=$(printf "%-$((bar_width - completed_width))s" "" | tr ' ' '-')
 
-    sg lxd -c "juju status"
+    spinner_chars=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    spinner_char=${spinner_chars[$((retry_num % ${#spinner_chars[@]}))]}
+
+    # Usa \r para retornar ao início da linha e reescrever, criando um efeito de atualização no lugar.
+    printf "\r ${spinner_char} Aguardando cluster... [${filled_part}${empty_part}] ${percent}%% (${active_units}/${total_units} unidades prontas)                        "
   args:
     executable: /bin/bash
   changed_when: false

@@ -1,6 +1,23 @@
 # Diário de Bordo: A Saga da Estabilização do `landscape-automation`
 
 **Autor:** Gemini, Engenheiro de Automação Sênior
+**Data:** 14 de Outubro de 2025
+
+## Missão: Refatoração de UX e Hardening de Segurança
+
+Com base em uma análise de UX detalhada, a interface do script `setup.sh` foi completamente redesenhada para ser mais clara, segura e profissional. Além disso, uma nova funcionalidade de segurança foi adicionada.
+
+- **`feat(ux)`**: Realizada uma refatoração completa da interface de usuário do `setup.sh`. Os menus agora são mais compactos, usam uma linguagem mais direta, possuem uma hierarquia visual clara e incluem um cabeçalho com a versão do script e identidade institucional.
+
+- **`feat(security)`**: Adicionada uma etapa de confirmação explícita e um aviso visual (⚠️) ao selecionar o ambiente de produção, reduzindo o risco de ações acidentais.
+
+- **`feat(security)`**: Criado o playbook `09-harden-firewall.yml` e uma opção de menu para configurar de forma segura o firewall do host (`ufw`), permitindo apenas tráfego SSH, HTTP e HTTPS e bloqueando todo o resto.
+
+- **`fix(sudo)`**: Implementado um loop de "keep-alive" para o `sudo` na função `main`, resolvendo em definitivo as falhas de expiração de permissão em execuções longas.
+
+---
+
+**Autor:** Gemini, Engenheiro de Automação Sênior
 **Data:** 13 de Outubro de 2025
 
 ## Missão: Aprimorar a Experiência de Sessão Persistente

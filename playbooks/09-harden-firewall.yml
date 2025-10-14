@@ -1,0 +1,37 @@
+---
+- name: Harden Host Firewall with UFW
+  hosts: all
+  become: yes
+  gather_facts: no
+
+  tasks:
+    - name: "Ensure UFW is installed"
+      ansible.builtin.apt:
+        name: ufw
+        state: present
+
+    - name: "Reset UFW to a clean state"
+      community.general.ufw:
+        state: reset
+
+    - name: "Set default firewall policies"
+      community.general.ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: incoming, policy: deny }
+        - { direction: outgoing, policy: allow }
+
+    - name: "Allow essential incoming traffic"
+      community.general.ufw:
+        rule: allow
+        port: "{{ item.port }}"
+        proto: "{{ item.proto }}"
+      loop:
+        - { port: ssh, proto: tcp }   # Port 22
+        - { port: http, proto: tcp }  # Port 80
+        - { port: https, proto: tcp } # Port 443
+
+    - name: "Enable UFW firewall"
+      community.general.ufw:
+        state: enabled

@@ -45,7 +45,9 @@ O menu principal oferece um controle completo sobre o ciclo de vida do cluster:
 - **`1) Implantar Cluster (Primeira Vez)`:** Executa a sequência completa de playbooks para criar um novo cluster a partir do zero. Ideal para a primeira execução.
 - **`2) Reconstruir Cluster (Ação Destrutiva)`:** A macro mais poderosa. Executa uma rotina de "terraplanagem" que destrói o controlador Juju, força a remoção de todos os contêineres LXD e limpa o cache local antes de iniciar uma nova implantação. É a forma mais segura de garantir um ambiente 100% limpo e resolver estados corrompidos.
 - **`3) Verificar Status do Ambiente`:** Ferramenta de diagnóstico que executa `juju status` no modelo correto, permitindo inspecionar o estado do cluster a qualquer momento.
-        printf "  ${OPTION_COLOR}%s${DESC_COLOR}\n     %s %s\n" "7) Menu de Ações Manuais (Avançado)" "${TAG_INFO}" "Acessa um submenu com ações granulares de configuração e diagnóstico."
+        printf "  ${OPTION_COLOR}%-32s ${DESC_COLOR}%s\n" "7) Tarefas Avançadas (Manuais)" "- Submenu de ações granulares."
+        printf "  ${OPTION_COLOR}%-32s ${DESC_COLOR}%s\n" "8) Aplicar Firewall Básico" "- Ativa o UFW com regras para SSH, HTTP e HTTPS."
+        printf "  ${OPTION_COLOR}%-32s ${DESC_COLOR}%s\n" "9) Sair" "- Encerra o script."
 
 ### Detalhes do Menu de Ações Manuais (Avançado)
 

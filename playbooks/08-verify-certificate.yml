@@ -16,20 +16,79 @@
         msg: "O certificado SSL não parece estar configurado no HAProxy para o modelo '{{ model_name }}'."
       when: juju_cert_b64.stdout == "" or "ERROR" in juju_cert_b64.stderr
 
-    - name: "Decode certificate and extract details using OpenSSL"
+    - name: "Process and display certificate details"
       ansible.builtin.shell:
         cmd: |
-          echo "{{ juju_cert_b64.stdout }}" | base64 --decode | openssl x509 -noout -subject -issuer -startdate -enddate
+          python3 -c '
+          import sys, base64, subprocess, datetime
+
+          def run_openssl(cert_bytes, args):
+              try:
+                  proc = subprocess.run(
+                      ["openssl", "x509", "-noout"] + args,
+                      input=cert_bytes,
+                      capture_output=True,
+                      text=True,
+                      check=True
+                  )
+                  return proc.stdout.strip().split("=", 1)[1].strip()
+              except Exception:
+                  return "<erro ao ler>"
+
+          b64_cert = sys.stdin.read()
+          if not b64_cert.strip():
+              print("ERRO: Não foi possível ler o certificado da configuração do Juju.")
+              sys.exit(1)
+
+          cert_bytes = base64.b64decode(b64_cert)
+
+          subject = run_openssl(cert_bytes, ["-subject"]).replace("CN = ", "")
+          issuer = run_openssl(cert_bytes, ["-issuer"]).replace("CN = ", "")
+          start_date_str = run_openssl(cert_bytes, ["-startdate"])
+          end_date_str = run_openssl(cert_bytes, ["-enddate"])
+
+          date_format = "%b %d %H:%M:%S %Y %Z"
+          start_date = datetime.datetime.strptime(start_date_str, date_format).astimezone()
+          end_date = datetime.datetime.strptime(end_date_str, date_format).astimezone()
+          now = datetime.datetime.now(end_date.tzinfo)
+
+          days_remaining = (end_date - now).days
+          is_valid = now < end_date
+          is_self_signed = subject == issuer
+
+          status_list = []
+          if is_valid:
+              status_list.append("VÁLIDO")
+          else:
+              status_list.append("EXPIRADO")
+
+          if is_self_signed:
+              status_list.append("(Autoassinado)")
+
+          status_line = " ".join(status_list)
+          days_line = f"({days_remaining} dias restantes)" if days_remaining >= 0 else ""
+
+          output = f"""
+######################################################################
+#             DETALHES DO CERTIFICADO DO HAPROXY                     #
+######################################################################
+
+      Status:       {status_line}
+
+      Emitido para: {subject}
+      Emitido por:  {issuer}
+
+      Válido de:    {start_date.strftime("%d/%m/%Y")}
+      Válido até:   {end_date.strftime("%d/%m/%Y")} {days_line}
+
+######################################################################
+"""
+          print(output)
+          '
+        stdin: "{{ juju_cert_b64.stdout }}"
       register: cert_details
       changed_when: false
 
-    - name: "Display certificate details"
+    - name: "Display formatted certificate details"
       ansible.builtin.debug:
-        msg: |
-          ######################################################################
-          #             DETALHES DO CERTIFICADO DO HAPROXY                     #
-          ######################################################################
-          
-          {{ cert_details.stdout | indent(10) }}
-          
-          ######################################################################
+        msg: "{{ cert_details.stdout }}"

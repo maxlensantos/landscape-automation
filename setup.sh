@@ -52,6 +52,7 @@ else # Fallback
     DANGER_COLOR="${RED}"
 fi
 
+SCRIPT_VERSION="2.2"
 VAULT_PASS_FILE="../vault_pass.txt"
 ENV_NAME=""
 INVENTORY_FILE=""
@@ -138,30 +139,37 @@ select_environment() {
         clear
         echo -e "${TITLE_COLOR}"
         echo "#####################################################################"
-        echo "#                                                                   #"
-        echo "#                  SETUP DO CLUSTER LANDSCAPE                       #"
-        echo "#                                                                   #"
+        echo "#            SETUP DO CLUSTER LANDSCAPE - v${SCRIPT_VERSION}                     #"
+        echo "#             SERPRO | DIOPE/SUPOP/OPDIG/OPDTV             #"
         echo "#####################################################################"
         echo -e "${RESET}"
 
-        echo -e "${TAG_INFO} Selecione o ambiente que deseja gerenciar."
+        echo -e "${TAG_INFO} Escolha o ambiente do Landscape a ser gerenciado:"
         echo ""
-        echo -e "  ${OPTION_COLOR}1)${DESC_COLOR} Produção"
-        echo -e "  ${OPTION_COLOR}2)${DESC_COLOR} Teste"
-        echo -e "  ${OPTION_COLOR}3)${DESC_COLOR} Sobre & Contato"
-        echo -e "  ${OPTION_COLOR}4)${DESC_COLOR} Sair"
+        printf "  ${WARN_COLOR}%-25s ${DESC_COLOR}%s\n" "⚠️ 1) Produção" "- Ambiente ativo e crítico."
+        printf "  ${OPTION_COLOR}%-25s ${DESC_COLOR}%s\n" "2) Teste" "- Ambiente de homologação."
+        printf "  ${OPTION_COLOR}%-25s ${DESC_COLOR}%s\n" "3) Informações" "- Sobre e Contato."
+        printf "  ${OPTION_COLOR}%-25s ${DESC_COLOR}%s\n" "4) Sair" "- Encerrar o script."
         echo ""
-        echo "---------------------------------------------------------------------"
-        echo -e "${DESC_COLOR}SERPRO | DIOPE/SUPOP/OPDIG/OPDTV${RESET}"
         echo "---------------------------------------------------------------------"
 
         local choice
         read -p "$(echo -e "${TAG_ACTION} Selecione a opção desejada: ${RESET}")" choice
+
         case "$choice" in
             1)
-                ENV_NAME="Produção"
-                INVENTORY_FILE="inventory/production.ini"
-                return 0
+                local prod_confirm
+                read -p "$(echo -e "\n${TAG_ACTION} ${WARN_COLOR}Você selecionou o ambiente de PRODUÇÃO. Deseja continuar? (s/N): ${RESET}")" prod_confirm
+                prod_confirm=${prod_confirm:-N}
+                if [[ "$prod_confirm" =~ ^[Ss]$ ]]; then
+                    ENV_NAME="Produção"
+                    INVENTORY_FILE="inventory/production.ini"
+                    return 0
+                else
+                    echo -e "${RED}Ação cancelada.${RESET}"
+                    sleep 1
+                    continue
+                fi
                 ;; 
             2)
                 ENV_NAME="Teste"
@@ -182,7 +190,7 @@ select_environment() {
                 echo ""
                 echo -e "    ---------------------------------------------------------------"
                 echo ""
-                echo -e "      Versão           : 2.1 (Estável)"
+                echo -e "      Versão           : ${SCRIPT_VERSION} (Estável)"
                 echo -e "      Mantenedores     : Equipe OPDTV | DIOPE/SUPOP/OPDIG"
                 echo -e "      Empresa          : SERPRO"
                 echo -e "      Canal de Suporte : lista-supop-opdig-opdtv @grupos.serpro.gov.br"
@@ -221,7 +229,7 @@ print_title_box() {
 advanced_menu() {
     while true; do
         print_title_box
-        echo -e "${BLUE}Menu de Ações Manuais (Avançado)${RESET}"
+        echo -e "${BLUE}Tarefas Avançadas (Manuais)${RESET}"
         echo "-----------------------------------------------------"
         
         declare -a actions
@@ -231,6 +239,7 @@ advanced_menu() {
         if is_playbook_implemented "07-apply-pfx-cert.yml"; then actions+=("Aplicar Certificado PFX"); fi
         if is_playbook_implemented "10-enable-oidc.yml"; then actions+=("Ativar Integração OIDC"); fi
         if is_playbook_implemented "11-disable-oidc.yml"; then actions+=("Desativar Integração OIDC"); fi
+        if is_playbook_implemented "09-harden-firewall.yml"; then actions+=("Aplicar Firewall Básico (SSH,HTTP,HTTPS)"); fi
         actions+=("Voltar ao Menu Principal")
 
         for i in "${!actions[@]}"; do
@@ -254,6 +263,7 @@ advanced_menu() {
             "Aplicar Certificado PFX") run_playbook "07-apply-pfx-cert.yml"; pause_and_continue; ;;
             "Ativar Integração OIDC") run_playbook "10-enable-oidc.yml"; pause_and_continue; ;;
             "Desativar Integração OIDC") run_playbook "11-disable-oidc.yml"; pause_and_continue; ;;
+            "Aplicar Firewall Básico (SSH,HTTP,HTTPS)") run_playbook "09-harden-firewall.yml"; pause_and_continue; ;;
             "Voltar ao Menu Principal") return ;; 
         esac
     done
@@ -262,33 +272,36 @@ advanced_menu() {
 main_menu() {
     while true; do
         print_title_box
-        echo -e "${TAG_INFO} Selecione uma operação para o cluster."
+        echo -e "${TAG_INFO} SERPRO | DIOPE/SUPOP/OPDIG/OPDTV"
+        echo -e "${TAG_INFO} Ambiente Selecionado: ${BOLD}${ENV_NAME}${RESET}"
+        echo "---------------------------------------------------------------------"
+        echo -e "Selecione uma operação para o ambiente:"
+        echo ""
 
-        # Ações de Ciclo de Vida
         if [ "$ENV_NAME" == "Teste" ]; then
-            echo -e "\n${HEADER_COLOR}-- Ciclo de Vida --${RESET}"
-            printf "  ${OPTION_COLOR}%s${DESC_COLOR}\n     %s %s\n" "1) Implantar Cluster (Primeira Vez)" "${TAG_INFO}" "Cria um novo cluster em ambiente limpo."
-            printf "  ${OPTION_COLOR}%s${DESC_COLOR}\n     %s %s\n" "2) Reconstruir Cluster (Ação Destrutiva)" "${TAG_WARN}" "O cluster existente será DEMOLIDO antes da recriação."
+            echo -e "${HEADER_COLOR}[1] Ciclo de Vida do Ambiente${RESET}"
+            printf "  ${OPTION_COLOR}%-35s ${DESC_COLOR}%s\n" "1) Implantar Cluster" "- Cria um novo cluster limpo."
+            printf "  ${OPTION_COLOR}%-35s ${DESC_COLOR}%s\n" "2) Reconstruir Cluster" "- Remove e recria o cluster de teste."
+            echo ""
         fi
 
-        echo -e "\n${HEADER_COLOR}-- Diagnóstico --${RESET}"
-        printf "  ${OPTION_COLOR}%s${DESC_COLOR}\n     %s %s\n" "3) Verificar Status do Ambiente" "${TAG_INFO}" "Exibe o status dos modelos e aplicações Juju."
-        printf "  ${OPTION_COLOR}%s${DESC_COLOR}\n     %s %s\n" "4) Verificar Certificado do HAProxy" "${TAG_INFO}" "Exibe os detalhes de validade do certificado SSL em uso."
-        printf "  ${OPTION_COLOR}%s${DESC_COLOR}\n     %s %s\n" "5) Executar Health Check" "${TAG_INFO}" "Executa verificação detalhada da saúde do cluster."
+        echo -e "${HEADER_COLOR}[2] Diagnóstico${RESET}"
+        printf "  ${OPTION_COLOR}%-35s ${DESC_COLOR}%s\n" "3) Exibir Status do Ambiente" "- Mostra o status Juju atual."
+        printf "  ${OPTION_COLOR}%-35s ${DESC_COLOR}%s\n" "4) Verificar Certificado HAProxy" "- Exibe validade e detalhes do certificado."
+        printf "  ${OPTION_COLOR}%-35s ${DESC_COLOR}%s\n" "5) Executar Health Check" "- Avalia a integridade do cluster."
+        echo ""
 
-        echo -e "\n${DANGER_COLOR}-- Operações Destrutivas --${RESET}"
-        printf "  ${DANGER_COLOR}%s${DESC_COLOR}\n     %s %s\n" "6) Demolir Cluster" "${TAG_CRITICAL}" "Ação irreversível. Remove todos os recursos do cluster."
-        printf "  ${DANGER_COLOR}%s${DESC_COLOR}\n     %s %s\n" "7) Forçar Demolição (Recuperação)" "${TAG_CRITICAL}" "Usar apenas se a demolição normal falhar. Risco de recursos órfãos."
+        echo -e "${DANGER_COLOR}[3] Operações Destrutivas ⚠️${RESET}"
+        printf "  ${DANGER_COLOR}%-35s ${DESC_COLOR}%s\n" "6) Destruir Ambiente (IRREVERSÍVEL)" "- Remove completamente o ambiente."
+        echo ""
 
-        echo -e "\n${HEADER_COLOR}-- Outras Opções --${RESET}"
-        printf "  ${OPTION_COLOR}%s${DESC_COLOR}\n" "8) Menu de Ações Manuais (Avançado)"
-        printf "  ${OPTION_COLOR}%s${DESC_COLOR}\n" "9) Sair"
-        echo "---------------------------------------------------------------------"
-        echo -e "${DESC_COLOR}SERPRO | DIOPE/SUPOP/OPDIG/OPDTV${RESET}"
+        echo -e "${HEADER_COLOR}[4] Outras Opções${RESET}"
+        printf "  ${OPTION_COLOR}%-35s ${DESC_COLOR}%s\n" "7) Tarefas Avançadas (Manuais)" "- Submenu de ações granulares."
+        printf "  ${OPTION_COLOR}%-35s ${DESC_COLOR}%s\n" "8) Sair" "- Encerra o script."
         echo "---------------------------------------------------------------------"
 
         local choice
-        read -p "$(echo -e "${TAG_ACTION} Selecione a opção desejada: ${RESET}")" choice
+        read -p "$(echo -e "${TAG_ACTION}Escolha a opção desejada: ${RESET}")" choice
 
         case "$choice" in
             1)  # Implantar
@@ -318,24 +331,16 @@ main_menu() {
             5)  # Health Check
                 run_playbook "98-verify-health.yml"; pause_and_continue; ;;
             6)  # Demolir
-                if confirm_action "Você tem CERTEZA que deseja DEMOLIR o Cluster ${ENV_NAME}?"; then
+                if confirm_action "Você tem CERTEZA que deseja DESTRUIR o Ambiente ${ENV_NAME} (IRREVERSÍVEL)?"; then
                     run_playbook "99-destroy-application.yml"
                 fi
                 pause_and_continue; ;;
-            7)  # Forçar Demolição
-                if confirm_action "AÇÃO CRÍTICA. Confirma a demolição forçada do Cluster ${ENV_NAME}?"; then
-                    echo -e "${DANGER_COLOR}--- Executando Demolição Forçada ---${RESET}"
-                    local model_name=$(grep -E '^model_name=' "${INVENTORY_FILE}" | cut -d'=' -f2)
-                    sg lxd -c "juju destroy-model '${model_name}' --force --destroy-storage --no-prompt" || echo -e "${WARN_COLOR}Falha ao forçar a demolição (o modelo pode já ter sido removido).${RESET}"
-                fi
-                pause_and_continue; ;;
-            8) advanced_menu; ;; 
-            9) exit 0; ;; 
-            *) echo -e "\n${DANGER_COLOR}Opção inválida.${RESET}"; pause_and_continue; ;; 
+            7) advanced_menu; ;;
+            8) exit 0; ;;
+            *) echo -e "\n${DANGER_COLOR}Opção inválida.${RESET}"; pause_and_continue; ;;
 esac
     done
 }
-
 # --- Ponto de Entrada do Script ---
 
 ensure_persistent_session() {
