@@ -478,8 +478,8 @@ ensure_persistent_session() {
 }
 
 main() {
-    # Garante que o script rode em uma sessão persistente
-    ensure_persistent_session "$@"
+    # Chamada temporariamente desativada para depuração.
+    # ensure_persistent_session "$@"
 
     # Valida a senha do sudo no início para evitar múltiplos prompts
     echo -e "${TAG_ACTION} A execução pode exigir privilégios de administrador (sudo).${RESET}"
