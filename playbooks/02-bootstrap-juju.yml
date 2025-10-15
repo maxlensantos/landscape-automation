@@ -37,7 +37,7 @@
       become: yes
 
     - name: Check for existing juju controllers
-      ansible.builtin.command: sg lxd -c "juju controllers"
+      ansible.builtin.command: sg lxd -c "/snap/bin/juju controllers"
       register: juju_controllers_result
       changed_when: false
       become: no
@@ -46,7 +46,7 @@
 
     # --- Bootstrap para Ambiente de Teste ---
     - name: Bootstrap Juju on localhost for testing
-      ansible.builtin.command: "sg lxd -c 'juju bootstrap localhost {{ controller_name }}'"
+      ansible.builtin.command: "sg lxd -c '/snap/bin/juju bootstrap localhost {{ controller_name }}'"
       when:
         - not (is_ha_cluster | bool)
         - "controller_name not in juju_controllers_result.stdout"

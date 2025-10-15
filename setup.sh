@@ -489,6 +489,28 @@ main() {
     echo -e "${GREEN}Privilégios de sudo verificados.${RESET}"
     echo ""
 
+    # Verifica se o Ansible está instalado
+    if ! command -v ansible-playbook &> /dev/null; then
+        echo -e "${TAG_WARN}AVISO: O comando 'ansible-playbook' não foi encontrado.${RESET}" >&2
+        read -p "$(echo -e "${TAG_ACTION}Deseja instalar o Ansible agora (requer sudo)? (S/n): ${RESET}")" install_ansible
+        install_ansible=${install_ansible:-S}
+
+        if [[ "$install_ansible" =~ ^[Ss]$ ]]; then
+            echo -e "${TAG_INFO}Instalando o Ansible...${RESET}"
+            if sudo apt update && sudo apt install -y ansible; then
+                echo -e "${GREEN}Ansible instalado com sucesso!${RESET}"
+            else
+                echo -e "${DANGER_COLOR}Falha ao instalar o Ansible. Por favor, instale manualmente e execute o script novamente.${RESET}"
+                exit 1
+            fi
+        else
+            echo -e "${DANGER_COLOR}Ansible é necessário para continuar. Saindo.${RESET}"
+            exit 1
+        fi
+    fi
+
+    # Lida com a senha do Vault de forma centralizada
+
     if [ ! -d "playbooks" ] || [ ! -d "inventory" ]; then
         die "Este script deve ser executado a partir do diretório raiz 'landscape-automation'."
     fi

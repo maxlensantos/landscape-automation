@@ -7,6 +7,6 @@
   tasks:
     - name: "Remove OIDC configuration from landscape-server"
       ansible.builtin.command:
-        cmd: "sg lxd -c \"juju config -m {{ model_name }} landscape-server config=''\""
+        cmd: "sg lxd -c \"/snap/bin/juju config -m {{ model_name }} landscape-server config=''\""
       changed_when: true
 

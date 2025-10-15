@@ -4,28 +4,23 @@
   gather_facts: no
   connection: local
 
-  vars:
-    max_retries: 30 # 5 minutes (30 retries * 10s delay)
-
   tasks:
-    - name: "Start forcefully killing the Juju controller (asynchronously)"
-      ansible.builtin.command: "sg lxd -c 'juju kill-controller {{ controller_name }} --no-prompt'"
-      async: 600  # 10 minutos de timeout
-      poll: 0
-      register: kill_async
-      become: no
-      ignore_errors: true # Se o controller não existe, o comando falha, o que é um sucesso para nós.
+    - name: "Ensure Juju snap is installed before cleanup"
+      ansible.builtin.snap:
+        name: juju
+        classic: yes
+      become: yes
 
-    - name: "Wait for controller to be killed"
-      ansible.builtin.async_status:
-        jid: kill_async.jid
-      register: job_result
-      until: job_result.finished
-      retries: 120 # 120 retries * 5s de espera = 10 minutos
-      delay: 5
+    - name: "Attempt to forcefully kill the Juju controller"
+      ansible.builtin.command: "sg lxd -c '/snap/bin/juju kill-controller {{ controller_name }} --no-prompt'"
+      register: kill_result
+      changed_when: "'Destroying controller' in kill_result.stdout"
+      # This task is successful if the command succeeds OR if it fails because the controller is already gone.
+      failed_when:
+        - "kill_result.rc != 0"
+        - "'not found' not in kill_result.stderr"
+        - "'no controller API addresses' not in kill_result.stderr"
       become: no
-      ignore_errors: true # Ignoramos erros aqui também.
-
 
     - name: "List all LXD containers"
       ansible.builtin.command: "lxc list --format=json"
@@ -42,6 +37,7 @@
       when: "(lxc_list_json.stdout | from_json) is iterable and lxc_list_json.stdout != ''"
       changed_when: true
       become: true
+      ignore_errors: true # This prevents failure if container is already gone
 
     - name: "Ensure local Juju cache is removed"
       ansible.builtin.file:
@@ -49,58 +45,6 @@
         state: absent
       become: no
 
-    - name: Check for available models before destruction
-      ansible.builtin.command: sg lxd -c "juju models --format=json"
-      register: juju_models_json_before
-      changed_when: false
-      become: no
-      failed_when: "juju_models_json_before.rc != 0 and 'No controllers registered' not in juju_models_json_before.stderr"
-
-    - name: Set list of model names before destruction
-      ansible.builtin.set_fact:
-        model_names_before: "{{ ((juju_models_json_before.stdout | from_json).models | map(attribute='name') | list) if 'models' in (juju_models_json_before.stdout | from_json) else [] }}"
-      when: juju_models_json_before.stdout is defined and juju_models_json_before.stdout != ""
-
-    - name: Inform that the model is already destroyed
+    - name: "Display final cleanup message"
       ansible.builtin.debug:
-        msg: "Ambiente '{{ model_name }}' não encontrado. Nenhuma ação é necessária."
-      when: model_name not in model_names_before
-
-    - name: Destroy the Juju model
-      when: model_name in model_names_before
-      block:
-        - name: Display destruction message
-          ansible.builtin.debug:
-            msg: "Iniciando a destruição do Cluster '{{ model_name }}'. Isso pode levar alguns minutos..."
-
-        - name: Execute destruction command
-          ansible.builtin.command: "sg lxd -c 'juju destroy-model {{ model_name }} --no-prompt --force --destroy-storage'"
-          changed_when: true
-          become: no
-
-        - name: Initialize destruction fact
-          ansible.builtin.set_fact:
-            model_destroyed: false
-
-        - name: Wait for model to be fully destroyed (with clean UX)
-          ansible.builtin.include_tasks: tasks/poll_destruction.yml
-          loop: "{{ range(1, max_retries + 1) | list }}"
-          loop_control:
-            loop_var: retry_num
-          when: not model_destroyed
-
-        - name: Final check and status message
-          when: model_destroyed
-          block:
-            - name: Print a newline to keep the last spinner message
-              ansible.builtin.shell: echo ""
-              changed_when: false
-
-            - name: Display success message
-              ansible.builtin.debug:
-                msg: "Modelo '{{ model_name }}' destruído com sucesso."
-
-        - name: Timeout message
-          ansible.builtin.fail:
-            msg: "Timeout: O modelo '{{ model_name }}' não foi destruído após {{ max_retries * 10 / 60 }} minutos."
-          when: not model_destroyed
+        msg: "Cleanup process completed. The environment is ready for a fresh deployment."

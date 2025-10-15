@@ -5,43 +5,39 @@
   connection: local
 
   vars:
-    spinner_chars: ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏']
-    max_iterations: 720  # 60 minutos (720 * 5 segundos)
-    problem_summary: []
+    health_check_retries: 240 # 60 minutes (240 retries * 15 seconds)
+    health_check_delay: 15
 
   tasks:
-    - name: Initialize completion fact
+    - name: Wait for applications to become active
+      ansible.builtin.shell:
+        cmd: "sg lxd -c 'juju status --format=json' | /usr/bin/python3 health_check.py"
+      args:
+        executable: /bin/bash
+        chdir: "{{ playbook_dir }}"
+      register: health_check_result
+      until: health_check_result.rc == 0
+      retries: "{{ health_check_retries }}"
+      delay: "{{ health_check_delay }}"
+      changed_when: false
+      ignore_errors: true # We check the final status manually
+
+    - name: Set final health status fact
       ansible.builtin.set_fact:
-        all_apps_active: false
+        all_apps_active: "{{ health_check_result.rc == 0 }}"
 
-    - name: Wait for applications to become active (with spinner UX)
-      ansible.builtin.include_tasks: tasks/poll_status.yml
-      loop: "{{ range(0, max_iterations) | list }}"
-      loop_control:
-        loop_var: retry_num
-      when: not all_apps_active
-
-    - name: Handle case where model does not exist
-      when: >
-        juju_status_json.failed and
-        ('not found' in juju_status_json.stderr or 'no models' in juju_status_json.stderr)
-      block:
-        - name: Display "No Environment Found" message
-          ansible.builtin.debug:
-            msg: |
-              ######################################################################
-              #                   AMBIENTE NÃO ENCONTRADO                          #
-              ######################################################################
-              Parece que o ambiente já foi destruído ou ainda não foi criado.
-
-        - ansible.builtin.meta: end_play
+    - name: Get final Juju status for IP address
+      ansible.builtin.command: "sg lxd -c 'juju status --format=json'"
+      register: final_juju_status
+      changed_when: false
+      when: all_apps_active
 
     - name: Display SUCCESS and Next Steps
       when: all_apps_active
       block:
-        - name: Get HAProxy IP Address
+        - name: Set HAProxy IP Address
           ansible.builtin.set_fact:
-            haproxy_ip: "{{ ((juju_status_json.stdout | from_json).applications.haproxy.units['haproxy/0'])['public-address'] }}"
+            haproxy_ip: "{{ ((final_juju_status.stdout | from_json).applications.haproxy.units['haproxy/0'])['public-address'] }}"
 
         - name: Display Final Instructions
           ansible.builtin.debug:
@@ -64,43 +60,13 @@
 
               ######################################################################
 
-    - name: Display HUMANIZED "Still Waiting" Message
+    - name: Display TIMEOUT Message
       when: not all_apps_active
-      block:
+      ansible.builtin.debug:
+        msg: |
+          ######################################################################
+          #      A IMPLANTAÇÃO NÃO FOI CONCLUÍDA COM SUCESSO.                #
+          ######################################################################
 
-
-        - name: Generate a summary of non-active applications
-          ansible.builtin.set_fact:
-            problem_summary: "{{ problem_summary + [ 'App ' + item.key + ' esta ' + item.value.get('application-status', {}).get('current', 'desconhecido') ] }}"
-          loop: "{{ (juju_status_json.stdout | from_json).applications | dict2items }}"
-          when:
-            - item.value.get('application-status', {}).get('current', 'desconhecido') != 'active'
-            - item.value.units is defined
-            - item.value.units | length > 0
-
-        - name: Display the human-readable summary
-          ansible.builtin.debug:
-            msg: |
-              ######################################################################
-              #      A IMPLANTAÇÃO NÃO FOI CONCLUÍDA COM SUCESSO.                #
-              ######################################################################
-
-              Ocorreu um timeout enquanto aguardava as aplicações ficarem ativas.
-              Resumo dos problemas no momento do timeout:
-
-              {% for item in problem_summary %}
-              - {{ item }}
-              {% endfor %}
-
-              Aguarde mais alguns minutos ou investigue os problemas apontados.
-
-    - name: Re-check Juju status for final display if all_apps_active is true
-      ansible.builtin.command: sg lxd -c "juju status --format=json"
-      register: juju_status_json_final
-      changed_when: false
-      when: all_apps_active
-
-    - name: Set haproxy_ip for final display
-      ansible.builtin.set_fact:
-        haproxy_ip: "{{ ((juju_status_json_final.stdout | from_json).applications.haproxy.units['haproxy/0'])['public-address'] }}"
-      when: all_apps_active and juju_status_json_final is defined and juju_status_json_final.stdout is defined and juju_status_json_final.stdout != ''
+          Ocorreu um timeout após {{ health_check_retries * health_check_delay / 60 }} minutos.
+          Use a opção "Verificar Status do Ambiente" no menu principal para investigar.

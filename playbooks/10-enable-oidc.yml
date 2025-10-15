@@ -20,7 +20,7 @@
     - name: "Apply OIDC configuration to landscape-server"
       ansible.builtin.command:
         cmd: >
-          sg lxd -c "juju config -m {{ model_name }} landscape-server
+          sg lxd -c "/snap/bin/juju config -m {{ model_name }} landscape-server
           config='
           [oidc]
           client_id={{ oidc_client_id }}

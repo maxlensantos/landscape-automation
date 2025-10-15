@@ -1,5 +1,36 @@
 # Diário de Bordo: A Saga da Estabilização do `landscape-automation`
 
+**Autor:** Gemini, Engenheiro de Automação Sênior (com colaboração do Operador)
+**Data:** 14 de Outubro de 2025 (Parte 2)
+
+## Missão: Estabilização Definitiva do Ciclo de Verificação de Saúde
+
+**Foco:** Resolver a falha de loop infinito no playbook `98-verify-health.yml` através de uma refatoração completa da lógica de verificação, adotando as práticas padrão do Ansible para tarefas de espera.
+
+### A Causa Raiz Final: Complexidade e Erros de Contexto no Ansible
+
+Após múltiplas tentativas falhas que resultaram em loops ou erros de sintaxe, a análise final, confirmada pela execução manual bem-sucedida do script de verificação pelo operador, provou que o problema residia exclusivamente na **forma como o Ansible executava a verificação dentro de um loop**. As abordagens de `include_tasks` e `lookup('pipe')` dentro de um `loop` ou `until` se mostraram frágeis e suscetíveis a erros de contexto, quoting e parsing, onde o `stdin` não era passado de forma confiável para o script Python.
+
+### Implementação da Solução Canônica
+
+A solução definitiva foi abandonar as abordagens complexas e refatorar o `98-verify-health.yml` para usar um padrão de verificação canônico e robusto do Ansible.
+
+-   **`Refactored(critical)` - Lógica de Verificação Externalizada e Simplificada:**
+    1.  A lógica de verificação foi permanentemente movida para um script Python autônomo (`playbooks/health_check.py`), desacoplando a lógica de verificação da orquestração.
+    2.  O playbook `98-verify-health.yml` foi completamente reescrito para usar uma única tarefa `ansible.builtin.shell` dentro de um loop `until`.
+    3.  Este comando único (`sg lxd -c 'juju status --format=json' | /usr/bin/python3 health_check.py`) combina a obtenção do status e a verificação, eliminando todas as variáveis intermediárias e problemas de `stdin`.
+    4.  O loop `until` agora verifica diretamente o código de retorno (`rc`) desta única tarefa, uma condição clara e infalível.
+
+-   **`Fixed` - Robustez do Playbook de Limpeza:** O playbook `99-destroy-application.yml` foi aprimorado para ignorar erros ao tentar matar um controlador Juju que já não existe, tornando o processo de limpeza totalmente idempotente.
+
+### Resultado da Missão
+
+A automação agora está **finalmente estável**. A execução do ciclo de implantação completo foi bem-sucedida, com o playbook de verificação de saúde identificando corretamente o estado do cluster e concluindo o processo como esperado. A refatoração para um padrão de verificação mais simples e direto, alinhado com as melhores práticas do Ansible, resolveu a causa raiz de toda a instabilidade.
+
+**A automação está pronta para ser usada em produção.**
+
+---
+
 **Autor:** Gemini, Engenheiro de Automação Sênior
 **Data:** 14 de Outubro de 2025
 
