@@ -46,7 +46,7 @@
 
     # --- Bootstrap para Ambiente de Teste ---
     - name: Bootstrap Juju on localhost for testing
-      ansible.builtin.command: "sg lxd -c '/snap/bin/juju bootstrap localhost {{ controller_name }}'"
+      ansible.builtin.command: "sg lxd -c '/snap/bin/juju bootstrap localhost {{ controller_name }} --bootstrap-timeout=3600'"
       when:
         - not (is_ha_cluster | bool)
         - "controller_name not in juju_controllers_result.stdout"
@@ -55,7 +55,7 @@
 
     # --- Bootstrap para Ambiente de Produção (HA) ---
     - name: Bootstrap Juju on the first production node
-      ansible.builtin.command: "sg lxd -c 'juju bootstrap localhost {{ controller_name }}'"
+      ansible.builtin.command: "sg lxd -c 'juju bootstrap localhost {{ controller_name }} --bootstrap-timeout=3600'"
       when:
         - is_ha_cluster | bool
         - inventory_hostname == groups['landscape_vms'][0]
