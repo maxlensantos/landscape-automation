@@ -16,16 +16,15 @@ variables:
 
 # Template base para jobs que precisam de Juju/LXD
 .juju_lxd_base:
-  image: ubuntu:22.04 # Ou uma imagem customizada com Ansible, Juju, LXD, Python
+  # Use a sua nova imagem customizada!
+  image: registry.gitlab.com/seu-usuario/seu-projeto:latest
   before_script:
-    - apt-get update -qq && apt-get install -y python3 python3-pip openssl curl jq snapd
-    - snap install juju --classic
-    - snap install lxd
-    - lxd init --auto --storage-backend dir # Inicializa LXD de forma não interativa
-    - usermod -a -G lxd gitlab-runner # Adiciona o usuário do CI ao grupo lxd
-    - newgrp lxd # Ativa o novo grupo
-    - juju bootstrap localhost $CI_JUJU_CONTROLLER_NAME # Bootstrap do controlador Juju para CI
-    - juju add-model $CI_JUJU_MODEL_NAME # Adiciona um modelo para a implantação de teste
+    # Apenas a lógica de inicialização do ambiente de teste permanece
+    - lxd init --auto --storage-backend dir
+    - usermod -a -G lxd gitlab-runner # Esta linha é necessária no runtime
+    - newgrp lxd # Ativa o grupo para a sessão atual do shell
+    - juju bootstrap localhost $CI_JUJU_CONTROLLER_NAME
+    - juju add-model $CI_JUJU_MODEL_NAME
   after_script:
     # Garante que o ambiente Juju seja limpo após o teste, mesmo que falhe
     - juju destroy-model -m $CI_JUJU_CONTROLLER_NAME:$CI_JUJU_MODEL_NAME --force --no-prompt || true
@@ -37,11 +36,9 @@ variables:
 # ==============================================================================
 lint:
   stage: lint
-  image: ubuntu:22.04 # Imagem base para instalar shellcheck via apt
+  # A nova imagem já contém todas as ferramentas de lint
+  image: registry.gitlab.com/seu-usuario/seu-projeto:latest
   script:
-    - apt-get update -qq && apt-get install -y python3 python3-pip shellcheck # Instala Python e shellcheck
-    - pip install ansible-lint yamllint # Instala linters Python
-    - ansible-galaxy collection install community.general # Instala a coleção para módulos como snap
     - ansible-lint playbooks/
     - yamllint .
     - shellcheck setup.sh
