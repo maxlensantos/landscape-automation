@@ -1,8 +1,8 @@
 # Arquitetura e Premissas do Projeto "landscape-automation"
 
-<!-- 
-NOTA PARA ASSISTENTES DE IA: 
-Este documento é a fonte da verdade sobre a arquitetura e as decisões de design deste projeto. 
+<!--
+NOTA PARA ASSISTENTES DE IA:
+Este documento é a fonte da verdade sobre a arquitetura e as decisões de design deste projeto.
 Leia e compreenda este arquivo antes de propor ou realizar qualquer alteração no código.
 -->
 
@@ -14,31 +14,77 @@ O objetivo deste projeto é automatizar a implantação do Canonical Landscape, 
 
 A premissa fundamental deste projeto é a utilização de um **modelo híbrido**, combinando Ansible e Juju para tirar proveito da força de cada ferramenta.
 
-*   **Ansible (O Orquestrador):** É responsável pela camada de infraestrutura e preparação do ambiente. Suas tarefas incluem:
-    *   Instalar pacotes e dependências (LXD, Juju client).
-    *   Configurar o ambiente base (redes, usuários).
-    *   Orquestrar o fluxo de execução através de playbooks sequenciais.
-    *   Gerenciar tarefas externas ao ciclo de vida da aplicação (ex: certificados, redirecionamento de portas).
+- **Ansible (O Orquestrador):** É responsável pela camada de infraestrutura e preparação do ambiente. Suas tarefas incluem:
+  - Instalar pacotes e dependências (LXD, Juju client).
+  - Configurar o ambiente base (redes, usuários, túneis VXLAN).
+  - Orquestrar o fluxo de execução através de playbooks sequenciais.
+  - Gerenciar tarefas externas ao ciclo de vida da aplicação (ex: certificados, redirecionamento de portas).
 
-*   **Juju (O Modelador de Aplicação):** É responsável pelo ciclo de vida da aplicação Landscape.
-    *   **Por quê?** O Landscape é uma aplicação complexa e com estado, com múltiplas partes que se relacionam (servidor, banco de dados, mensageria). Juju é a ferramenta da Canonical desenhada especificamente para modelar e gerenciar essas relações complexas de forma robusta.
-    *   A topologia da aplicação é definida e implantada usando o **bundle oficial `landscape-scalable`** do canal `stable`. A configuração específica do ambiente (como certificados SSL) é aplicada atomicamente no momento do deploy através de um arquivo de **overlay**.
+- **Juju (O Modelador de Aplicação e Serviços):** É responsável pelo ciclo de vida da aplicação Landscape e de seus serviços de suporte.
+  - **Por quê?** O Landscape é uma aplicação complexa e com estado. Juju é a ferramenta da Canonical desenhada para modelar e gerenciar essas relações de forma robusta.
+  - Nesta arquitetura, o Juju gerencia não apenas a pilha do Landscape (servidor, banco de dados, etc.), mas também serviços de infraestrutura essenciais para o cluster, como o **servidor NFS** para o espelho de pacotes APT. Isso centraliza o gerenciamento de estado no Juju.
+  - A topologia da aplicação é definida e implantada usando o **bundle oficial `landscape-scalable`**, com serviços adicionais (como o NFS) sendo orquestrados e relacionados via playbooks Ansible.
+
+## 2.1. Visão de Infraestrutura e Topologia de Rede (vSphere)
+
+Esta seção detalha a arquitetura de rede projetada para um ambiente VMware vSphere, garantindo alta disponibilidade e performance.
+
+### Princípio Fundamental: vNIC Única
+
+- **Interface Única:** Cada VM (`lansrv01`, `lansrv02`) possui apenas **uma única interface de rede virtual (vNIC)**.
+- **Consolidação de Tráfego:** Esta vNIC é conectada à **"Rede Microsegmentação BSA"** e é responsável por transportar todo o tráfego, incluindo:
+  1.  **Tráfego de Gerenciamento:** Conexão do Ansible, comunicação do controlador Juju com seus agentes.
+  2.  **Tráfego da Aplicação:** Acesso dos usuários finais ao HAProxy.
+  3.  **Tráfego de Underlay:** Os pacotes UDP encapsulados da rede overlay VXLAN viajam entre as VMs através desta rede.
+
+### Topologia de Rede Lógica
+
+Existem duas redes lógicas principais operando em conjunto:
+
+#### 1. Rede Microsegmentação BSA (Underlay Físico/Virtual)
+- Esta é a rede à qual as vNICs das VMs estão conectadas.
+- **Requisito:** Deve haver conectividade IP completa (Camada 3) entre todas as VMs nesta rede.
+- **Consideração:** A vNIC única precisa ter largura de banda adequada para suportar a soma de todos os tipos de tráfego.
+
+#### 2. LXD Overlay Network (Overlay Lógico)
+- **Tecnologia:** Esta rede é criada e gerenciada pelo LXD/Juju usando **VXLAN**.
+- **Função:** Conecta de forma transparente todos os contêineres LXD (`landscape-server`, `rabbitmq-server`, `haproxy`, `nfs-server`), independentemente de em qual VM (`lansrv01` ou `lansrv02`) eles estejam rodando.
+- **Funcionamento:** O tráfego dos contêineres é encapsulado em pacotes UDP pelo VXLAN. O switch virtual do VMware vê apenas pacotes UDP sendo trocados entre os IPs das VMs, não o tráfego interno dos contêineres.
+
+### Requisitos do VMware vSphere
+
+Para que esta arquitetura funcione corretamente, a infraestrutura vSphere deve garantir o seguinte:
+
+- **Regra de Anti-Afinidade (DRS):** Uma regra **obrigatória** deve ser criada para garantir que as VMs `lansrv01` e `lansrv02` sempre residam em hosts ESXi físicos distintos. Isso garante a alta disponibilidade em caso de falha de um host físico.
+- **Virtualização de Hardware:** As extensões de virtualização de hardware (Intel VT-x / AMD-V) devem ser expostas para as VMs para permitir a execução dos contêineres LXD.
+- **Ponto Crítico de Rede:** Devido ao uso de uma rede overlay VXLAN, **NÃO é necessário habilitar "Modo Promíscuo" ou aceitar "Transmissões Falsificadas" (Forged Transmits)** no Port Group do vSwitch. O encapsulamento do VXLAN torna essas configurações desnecessárias.
+
+### Fluxos de Comunicação
+
+- **Juju:** O controlador Juju (no SO base do `lansrv01`) se comunica com os agentes Juju (no SO base de ambas as VMs) através da "Rede Microsegmentação BSA".
+- **Aplicação:** Os serviços dentro dos contêineres (ex: `landscape-server` falando com `postgresql`) se comunicam diretamente através da "LXD Overlay Network" (`172.16.0.0/24`), de forma transparente e segura.
 
 ## 3. Gerenciamento de Ambientes (Teste vs. Produção)
 
 A automação foi desenhada para ser flexível e suportar múltiplos ambientes de forma limpa.
 
-*   **Fonte da Verdade:** Os arquivos de inventário em `inventory/` (`testing.ini`, `production.ini`).
-*   **Mecanismo de Controle:** A variável `is_ha_cluster: <true|false>` no inventário é a chave que direciona toda a lógica condicional nos playbooks.
-*   **Topologia Declarativa:** A diferença entre os ambientes é gerenciada pelo `overlay-ha.yaml`, que modifica o `bundle-base.yaml` apenas com as diferenças para produção. Esta é uma premissa de design importante para evitar duplicação de código.
+- **Fonte da Verdade:** Os arquivos de inventário em `inventory/` (`testing.ini`, `production.ini`). Eles definem as variáveis do ambiente e os hosts que comporão o cluster.
+- **Grupo de Hosts:** Os nós que formarão o cluster Juju/LXD devem ser listados no grupo `[lxd_hosts]` do inventário.
+- **Mecanismo de Controle:** A variável `is_ha_cluster: <true|false>` no inventário continua sendo a chave que direciona a lógica condicional.
+- **Topologia Declarativa:** A diferença entre os ambientes é gerenciada pelo `overlay-ha.yaml`, que modifica o `bundle-base.yaml` apenas com as diferenças para produção. Esta é uma premissa de design importante para evitar duplicação de código.
 
 ## 4. Estrutura e Convenções do Projeto
 
-*   `setup.sh`: É o **ponto de entrada único e seguro** para os operadores. A premissa é que os playbooks nunca devem ser executados manualmente.
-*   `playbooks/`: Organizados em uma sequência numérica que representa a ordem lógica de execução.
-*   `vars/`: `main.yml` para variáveis comuns e `secrets.yml` para dados sensíveis, sempre criptografado com `ansible-vault`.
-*   **Idempotência:** Todas as tarefas devem ser, sempre que possível, idempotentes. Elas devem poder ser executadas múltiplas vezes sem causar efeitos colaterais indesejados.
-*   **Acesso em Ambientes Virtualizados (Multipass):** Para ambientes de desenvolvimento em VMs, a automação deve garantir o redirecionamento de portas (ex: 80, 443) da VM para o contêiner do proxy reverso (HAProxy) para permitir o acesso externo à interface. Esta lógica deve ser parte do fluxo de implantação padrão.
+- `setup.sh`: É o **ponto de entrada único e seguro** para os operadores. A premissa é que os playbooks nunca devem ser executados manualmente.
+- `playbooks/`: Organizados em uma sequência numérica que representa a ordem lógica de execução.
+  - `00-prepare-host-nodes.yml`: Prepara as VMs que servirão como nós do cluster (instala LXD, Juju, configura redes, etc.).
+  - `02-bootstrap-juju.yml`: Inicia o controlador Juju e adiciona os nós preparados como máquinas Juju.
+  - `03-deploy-application.yml`: Implanta o bundle do Landscape.
+  - `00-deploy-nfs-server.yml`: Implanta e configura o charm do NFS para o espelho APT.
+  - Playbooks subsequentes (`98-verify-health.yml`, etc.) cuidam da verificação e exposição do serviço.
+- `vars/`: `main.yml` para variáveis comuns e `secrets.yml` para dados sensíveis, sempre criptografado com `ansible-vault`.
+- **Idempotência:** Todas as tarefas devem ser, sempre que possível, idempotentes. Elas devem poder ser executadas múltiplas vezes sem causar efeitos colaterais indesejados.
+- **Acesso em Ambientes Virtualizados (Multipass):** Para ambientes de desenvolvimento em VMs, a automação deve garantir o redirecionamento de portas (ex: 80, 443) da VM para o contêiner do proxy reverso (HAProxy) para permitir o acesso externo à interface. Esta lógica deve ser parte do fluxo de implantação padrão.
 
 ## 5. Como Manter e Evoluir o Projeto
 

@@ -3,6 +3,8 @@
 # Contém variáveis não sensíveis que podem ser compartilhadas e versionadas.
 # Exemplo: versões de pacotes, nomes de usuários, caminhos de diretório, etc.
 
+lxd_bridge_name: lxdbr0
+
 # Versão do Landscape a ser instalada
 landscape_version: "23.03"
 

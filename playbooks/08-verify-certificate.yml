@@ -1,13 +1,13 @@
 ---
 - name: Verify HAProxy Certificate Validity
-  hosts: all
+  hosts: controller
   connection: local
   gather_facts: no
 
   tasks:
     - name: "Get HAProxy SSL certificate from Juju config"
       ansible.builtin.command:
-        cmd: "sg lxd -c '/snap/bin/juju config -m {{ model_name }} haproxy ssl_cert'"
+        cmd: "juju config -m {{ model_name }} haproxy ssl_cert"
       register: juju_cert_b64
       changed_when: false
 

@@ -1,0 +1,46 @@
+---
+- name: Deploy Canonical Landscape (Test Environment)
+  hosts: controller
+  connection: local
+  become: no
+  gather_facts: no
+
+  vars:
+    overlay_path: "{{ playbook_dir }}/../landscape_overlay.yaml"
+    cert_path: "/tmp/landscape_cert.pem"
+    key_path: "/tmp/landscape_key.pem"
+    cert_cn: "{{ domain_name | default('landscape.test.local') }}"
+
+  tasks:
+    - name: Generate a self-signed certificate and private key
+      ansible.builtin.command:
+        cmd: >
+          openssl req -new -x509 -nodes -days 365
+          -subj "/CN={{ cert_cn }}"
+          -out "{{ cert_path }}"
+          -keyout "{{ key_path }}"
+      args:
+        creates: "{{ cert_path }}"
+
+    - name: Read and b64encode certificate
+      ansible.builtin.set_fact:
+        cert_content_b64: "{{ (lookup('file', cert_path) + '\n') | b64encode }}"
+
+    - name: Read and b64encode private key
+      ansible.builtin.set_fact:
+        key_content_b64: "{{ lookup('file', key_path) | b64encode }}"
+
+    - name: Create Juju overlay file for SSL
+      ansible.builtin.copy:
+        dest: "{{ overlay_path }}"
+        content: |
+          applications:
+            haproxy:
+              options:
+                ssl_cert: {{ cert_content_b64 }}
+                ssl_key: {{ key_content_b64 }}
+
+    - name: Deploy Landscape for Test Environment using Bundle and Overlay
+      ansible.builtin.command:
+        cmd: "juju deploy -m {{ model_name }} landscape-scalable --channel=stable --overlay {{ overlay_path }}"
+      changed_when: true

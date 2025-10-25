@@ -1,0 +1,46 @@
+---
+- name: Deploy and Configure NFS Server via Juju
+  hosts: controller
+  connection: local
+  gather_facts: no
+  become: no
+
+  tasks:
+    - name: Check if nfs-server application already exists
+      ansible.builtin.command: "juju status -m {{ model_name }} nfs-server --format=json"
+      register: nfs_status
+      changed_when: false
+      ignore_errors: true
+
+    - name: Deploy nfs-server charm
+      ansible.builtin.command: "juju deploy -m {{ model_name }} nfs-server"
+      changed_when: true
+      when: nfs_status.rc != 0 # Only deploy if it doesn't exist
+
+    - name: Wait for nfs-server to become active
+      ansible.builtin.command: "juju wait-for application -m {{ model_name }} nfs-server --query=\"status==''active''\""
+      changed_when: false
+      retries: 30
+      delay: 20
+
+    - name: Configure nfs-server exports
+      ansible.builtin.command: "juju config -m {{ model_name }} nfs-server exports=/srv/landscape_apt_mirror"
+      changed_when: true
+
+    - name: Check if relation already exists
+      ansible.builtin.command: "juju status -m {{ model_name }} --relations --format=json"
+      register: status_relations
+      changed_when: false
+
+    - name: Add relation between landscape-server and nfs-server
+      ansible.builtin.command: "juju add-relation -m {{ model_name }} landscape-server nfs-server:nfs-client"
+      changed_when: true
+      when:
+        - "'nfs-server:nfs-client' not in status_relations.stdout"
+        - "'landscape-server:nfs' not in status_relations.stdout"
+
+    - name: Wait for model to settle after adding relation
+      ansible.builtin.command: "juju wait-for model {{ model_name }}"
+      changed_when: false
+      retries: 30
+      delay: 20

@@ -13,6 +13,7 @@ applications:
 
   haproxy:
     scale: 2
+    charm: ../charms/haproxy.charm
 
   # Remove a aplicação PostgreSQL, pois em produção usamos um serviço externo (DBaaS).
   # A sintaxe de um mapa vazio remove a aplicação do bundle final.

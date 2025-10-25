@@ -1,0 +1,49 @@
+---
+- name: Bootstrap Juju Controller and Add Machines
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  gather_facts: no
+
+  tasks:
+    - name: Check for existing juju controllers
+      ansible.builtin.command: "juju controllers"
+      register: juju_controllers_result
+      changed_when: false
+      become: no
+      # This task is expected to fail if no controller exists. We treat that as a success.
+      failed_when: "juju_controllers_result.rc != 0 and 'No controllers registered' not in juju_controllers_result.stderr"
+
+    - name: Bootstrap Juju controller
+      ansible.builtin.command: "juju bootstrap localhost {{ controller_name }} --config 'security.privileged=true'"
+      changed_when: true
+      become: no
+      ignore_errors: true # Ensures we proceed even if the controller already exists
+
+    - name: Check if model already exists
+      ansible.builtin.command: "juju models"
+      register: juju_models_result
+      changed_when: false
+      become: no
+
+    - name: Add Juju model
+      ansible.builtin.command: "juju add-model {{ model_name }}"
+      when: "model_name not in juju_models_result.stdout"
+      changed_when: true
+      become: no
+
+    - name: Get list of current machines in the model
+      ansible.builtin.command: "juju machines -m {{ model_name }} --format=json"
+      register: juju_machines_json
+      changed_when: false
+      become: no
+      ignore_errors: true # Will fail if no machines exist, which is fine
+
+    - name: Add machines to the Juju model
+      ansible.builtin.command: "juju add-machine -m {{ model_name }} ssh:{{ hostvars[item]['ansible_user'] | default('ubuntu') }}@{{ hostvars[item]['ansible_host'] }}"
+      loop: "{{ groups['lxd_hosts'] }}"
+      loop_control:
+        loop_var: item
+      when:
+        - item != groups['lxd_hosts'][0]
+        - hostvars[item]['ansible_host'] not in (juju_machines_json.stdout | from_json)['machines']
+      changed_when: true
+      become: no

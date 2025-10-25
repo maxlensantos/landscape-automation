@@ -1,0 +1,35 @@
+---
+- name: Clean Juju Agent State from Hosts
+  hosts: lxd_hosts
+  become: yes
+  gather_facts: no
+
+  tasks:
+    - name: "Ensure no juju processes are running"
+      ansible.builtin.command: "sudo killall -9 jujud || true"
+      changed_when: false # This is a cleanup step, not a state change
+
+    - name: "Remove Juju snap"
+      ansible.builtin.snap:
+        name: juju
+        state: absent
+
+    - name: "Ensure Juju system-level data is removed"
+      ansible.builtin.file:
+        path: /var/lib/juju
+        state: absent
+
+    - name: "Ensure Juju user-level data is removed"
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/snap/juju"
+        state: absent
+
+    - name: "Install Juju snap for a clean state"
+      ansible.builtin.snap:
+        name: juju
+        classic: yes
+        state: present
+
+    - name: "Reload systemd daemon"
+      ansible.builtin.systemd:
+        daemon_reload: yes

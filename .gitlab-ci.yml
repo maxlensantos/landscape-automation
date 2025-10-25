@@ -19,10 +19,13 @@ variables:
   # Use a sua nova imagem customizada!
   image: registry.gitlab.com/seu-usuario/seu-projeto:latest
   before_script:
-    # Apenas a lógica de inicialização do ambiente de teste permanece
+    # Prepara o arquivo de senha do Vault para uso não-interativo
+    - echo "$ANSIBLE_VAULT_PASSWORD" > .vault_pass.tmp
+    - export VAULT_PASS_FILE=.vault_pass.tmp
+    # Inicializa o ambiente LXD/Juju
     - lxd init --auto --storage-backend dir
-    - usermod -a -G lxd gitlab-runner # Esta linha é necessária no runtime
-    - newgrp lxd # Ativa o grupo para a sessão atual do shell
+    - usermod -a -G lxd gitlab-runner
+    - newgrp lxd
     - juju bootstrap localhost $CI_JUJU_CONTROLLER_NAME
     - juju add-model $CI_JUJU_MODEL_NAME
   after_script:
@@ -30,6 +33,8 @@ variables:
     - juju destroy-model -m $CI_JUJU_CONTROLLER_NAME:$CI_JUJU_MODEL_NAME --force --no-prompt || true
     - juju kill-controller $CI_JUJU_CONTROLLER_NAME --force --no-prompt || true
     - lxc list -c n --format=json | jq -r '.[].name' | xargs -r lxc delete --force || true
+    # Limpa o arquivo de senha temporário
+    - rm -f .vault_pass.tmp
 
 # ==============================================================================
 # Stage: Linting e Verificação de Sintaxe
@@ -69,12 +74,12 @@ full_integration_test:
     - echo "Executando o fluxo completo de implantação do ambiente de teste..."
     # Para CI, é melhor chamar os playbooks diretamente, pois setup.sh é interativo.
     # Aqui, chamamos os playbooks na sequência definida pelo seu setup.sh para o ambiente de Teste.
-    - ansible-playbook -i inventory/testing.ini playbooks/00-prepare-vms.yml
-    - ansible-playbook -i inventory/testing.ini playbooks/01-setup-cluster-lxd.yml
-    - ansible-playbook -i inventory/testing.ini playbooks/02-bootstrap-juju.yml
-    - ansible-playbook -i inventory/testing.ini playbooks/03-deploy-application.yml
-    - ansible-playbook -i inventory/testing.ini playbooks/98-verify-health.yml
-    - ansible-playbook -i inventory/testing.ini playbooks/06-expose-proxy.yml
+    - ansible-playbook -i inventory/testing.ini playbooks/00-prepare-vms.yml --vault-password-file $VAULT_PASS_FILE
+    - ansible-playbook -i inventory/testing.ini playbooks/01-setup-cluster-lxd.yml --vault-password-file $VAULT_PASS_FILE
+    - ansible-playbook -i inventory/testing.ini playbooks/02-bootstrap-juju.yml --vault-password-file $VAULT_PASS_FILE
+    - ansible-playbook -i inventory/testing.ini playbooks/03-deploy-application.yml --vault-password-file $VAULT_PASS_FILE
+    - ansible-playbook -i inventory/testing.ini playbooks/98-verify-health.yml --vault-password-file $VAULT_PASS_FILE
+    - ansible-playbook -i inventory/testing.ini playbooks/06-expose-proxy.yml --vault-password-file $VAULT_PASS_FILE
     - echo "Implantação de teste concluída com sucesso!"
 
 # ==============================================================================

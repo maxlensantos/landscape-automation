@@ -1,0 +1,3 @@
+---
+- name: Prepare Infrastructure
+  ansible.builtin.import_playbook: 00-prepare-host-nodes.yml

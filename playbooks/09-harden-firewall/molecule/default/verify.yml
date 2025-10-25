@@ -1,0 +1,34 @@
+---
+- name: Verify
+  hosts: all
+  become: yes
+  gather_facts: no
+
+  tasks:
+    - name: Get UFW status
+      ansible.builtin.command: ufw status verbose
+      register: ufw_status
+      changed_when: false
+
+    - name: Assert firewall is active
+      ansible.builtin.assert:
+        that:
+          - "'Status: active' in ufw_status.stdout"
+        fail_msg: "O UFW não está ativo."
+        success_msg: "O UFW está ativo."
+
+    - name: Assert default policies are correct
+      ansible.builtin.assert:
+        that:
+          - "'Default: deny (incoming), allow (outgoing)' in ufw_status.stdout"
+        fail_msg: "As políticas padrão do UFW estão incorretas."
+        success_msg: "As políticas padrão do UFW estão corretas."
+
+    - name: Assert essential ports are allowed
+      ansible.builtin.assert:
+        that:
+          - "'22/tcp' in ufw_status.stdout and 'ALLOW IN' in ufw_status.stdout"
+          - "'80/tcp' in ufw_status.stdout and 'ALLOW IN' in ufw_status.stdout"
+          - "'443/tcp' in ufw_status.stdout and 'ALLOW IN' in ufw_status.stdout"
+        fail_msg: "Uma ou mais portas essenciais (22, 80, 443) não estão configuradas corretamente."
+        success_msg: "As portas essenciais (22, 80, 443) estão configuradas corretamente."

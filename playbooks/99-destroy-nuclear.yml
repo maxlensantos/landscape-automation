@@ -1,0 +1,50 @@
+---
+- name: Nuke Juju Environment
+  hosts: lxd_hosts
+  gather_facts: no
+  become: yes
+  vars_files:
+    - ../vars/main.yml
+
+  tasks:
+    - name: "Kill all Juju and MongoDB processes"
+      ansible.builtin.command: "killall -9 jujud mongod"
+      changed_when: true
+      ignore_errors: true
+
+    - name: "Get list of all LXD containers"
+      ansible.builtin.command: "lxc list --format=json"
+      register: lxc_list_json
+      changed_when: false
+      ignore_errors: true
+
+    - name: "Forcefully delete any remaining Juju containers"
+      ansible.builtin.command: "lxc delete --force {{ item.name }}"
+      loop: "{{ (lxc_list_json.stdout | from_json) | selectattr('name', 'match', '^juju-') }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: "lxc_list_json.stdout is defined and (lxc_list_json.stdout | from_json) is iterable and lxc_list_json.stdout != ''"
+      changed_when: true
+      ignore_errors: true
+
+    - name: "Delete the LXD network bridge"
+      ansible.builtin.command: "lxc network delete {{ lxd_bridge_name | default('lxdbr0') }}"
+      changed_when: true
+      ignore_errors: true
+
+    - name: "Delete the LXD default storage pool"
+      ansible.builtin.command: "lxc storage delete default"
+      changed_when: true
+      ignore_errors: true
+
+    - name: "Ensure local Juju cache is removed"
+      ansible.builtin.file:
+        path: "{{ lookup('env', 'HOME') }}/.local/share/juju"
+        state: absent
+      become: no
+
+    - name: "Display final nuke message"
+      ansible.builtin.debug:
+        msg: "Nuclear cleanup process completed."
+      become: no
+

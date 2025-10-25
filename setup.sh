@@ -1,103 +1,47 @@
 #!/bin/bash
-#
+
 # setup.sh: Ponto de entrada para automação da implantação do Landscape.
-#
+# VERSÃO 5.0 - Versão final com fluxo de trabalho e UX aprimorados.
 
 # Aborta o script se um comando falhar, se uma variável não estiver definida ou em erros de pipe.
 set -euo pipefail
 
-# --- Paleta de Cores e Estilos ---
-if command -v tput >/dev/null && tput setaf 1 >/dev/null 2>&1; then
-    # Cores
-    GREEN=$(tput setaf 2)
-    YELLOW=$(tput setaf 3)
-    RED=$(tput setaf 1)
-    BLUE=$(tput setaf 4)
-    
-    # Estilos
-    BOLD=$(tput bold)
-    RESET=$(tput sgr0)
-    
-    # Tags de Nível de Severidade
-    TAG_INFO="${BLUE}[INFO]${RESET}"
-    TAG_WARN="${YELLOW}[WARN]${RESET}"
-    TAG_CRITICAL="${RED}[CRITICAL]${RESET}"
-    TAG_ACTION="${BLUE}[ACTION]${RESET}"
+# Garante um tipo de terminal são, especialmente dentro do tmux
+export TERM=screen
+export PATH=$PATH:/snap/bin
 
-    # Cores para UI
-    TITLE_COLOR="${BOLD}${BLUE}"
-    HEADER_COLOR="${GREEN}"
-    PROMPT_COLOR="${BLUE}"
-    OPTION_COLOR="${BOLD}"
-    DESC_COLOR="${RESET}"
-    WARN_COLOR="${YELLOW}"
-    DANGER_COLOR="${RED}"
+# --- Paleta de Cores e Estilos ---
+if command -v tput >/dev/null && [[ -n "$(tput setaf 1)" ]]; then
+    GREEN=$(tput setaf 2); YELLOW=$(tput setaf 3); RED=$(tput setaf 1); BLUE=$(tput setaf 4)
+    BOLD=$(tput bold); RESET=$(tput sgr0)
+    TAG_INFO="${BLUE}[INFO]${RESET}"; TAG_WARN="${YELLOW}[WARN]${RESET}"; TAG_ACTION="${BLUE}[ACTION]${RESET}"
+    TITLE_COLOR="${BOLD}${BLUE}"; HEADER_COLOR="${GREEN}"; PROMPT_COLOR="${BLUE}"; OPTION_COLOR="${BOLD}"; DESC_COLOR="${RESET}"; WARN_COLOR="${YELLOW}"; DANGER_COLOR="${RED}"
 else # Fallback
-    GREEN="\033[1;32m"
-    YELLOW="\033[1;33m"
-    RED="\033[1;31m"
-    BLUE="\033[1;34m"
-    BOLD="\033[1m"
-    RESET="\033[0m"
-    TAG_INFO="[INFO]"
-    TAG_WARN="[WARN]"
-    TAG_CRITICAL="[CRITICAL]"
-    TAG_ACTION="[ACTION]"
-    TITLE_COLOR="${BOLD}${BLUE}"
-    HEADER_COLOR="${GREEN}"
-    PROMPT_COLOR="${BLUE}"
-    OPTION_COLOR="${BOLD}"
-    DESC_COLOR="${RESET}"
-    WARN_COLOR="${YELLOW}"
-    DANGER_COLOR="${RED}"
+    GREEN="\033[1;32m"; YELLOW="\033[1;33m"; RED="\033[1;31m"; BLUE="\033[1;34m"
+    BOLD="\033[1m"; RESET="\033[0m"
+    TAG_INFO="[INFO]"; TAG_WARN="[WARN]"; TAG_ACTION="[ACTION]"
+    TITLE_COLOR="${BOLD}${BLUE}"; HEADER_COLOR="${GREEN}"; PROMPT_COLOR="${BLUE}"; OPTION_COLOR="${BOLD}"; DESC_COLOR="${RESET}"; WARN_COLOR="${YELLOW}"; DANGER_COLOR="${RED}"
 fi
 
-SCRIPT_VERSION="2.2"
-echo "DEBUG: SCRIPT_VERSION no topo do script: ${SCRIPT_VERSION}"
+# --- Variáveis Globais ---
+SCRIPT_VERSION="5.0"
 VAULT_PASS_FILE="../vault_pass.txt"
-
 ENV_NAME=""
 INVENTORY_FILE=""
 LAST_ACTION_STATUS=""
+JUJU_MODEL_NAME=""
+JUJU_CONTROLLER_NAME=""
 
 # --- Funções Auxiliares ---
+die() { echo -e "${DANGER_COLOR}ERRO: $1${RESET}" >&2; exit 1; }
+confirm_action() { local prompt="$1"; local response; read -r -p "$(echo -e "${TAG_ACTION} ${WARN_COLOR}${prompt} [s/N]: ${RESET}")" response; response=${response:-N}; if [[ "$response" =~ ^[Ss]$ ]]; then return 0; else echo -e "${RED}Ação cancelada.${RESET}"; return 1; fi; }
+pause_and_continue() { echo -e "${DESC_COLOR}"; read -r -p "Pressione [Enter] para continuar..." && echo -e "${RESET}" || echo -e "${RESET}"; }
+is_playbook_implemented() { local playbook_file="playbooks/$1"; if [ -f "$playbook_file" ]; then return 0; else return 1; fi; }
 
-die() {
-    echo -e "${DANGER_COLOR}ERRO: $1${RESET}" >&2
-    exit 1
-}
-
-confirm_action() {
-    local prompt="$1"
-    local response
-    read -p "$(echo -e "${TAG_ACTION} ${WARN_COLOR}${prompt} [s/N]: ${RESET}")" response
-    response=${response:-N}
-    if [[ "$response" =~ ^[Ss]$ ]]; then
-        return 0
-    else
-        echo -e "${RED}Ação cancelada.${RESET}"
-        return 1
-    fi
-}
-
-pause_and_continue() {
-    echo -e "${DESC_COLOR}"
-    read -p "Pressione [Enter] para voltar ao menu..."
-    echo -e "${RESET}"
-}
-
-is_playbook_implemented() {
-    local playbook_file="playbooks/$1"
-    if [ -f "$playbook_file" ] && ! grep -q "ainda não implementado" "$playbook_file"; then
-        return 0
-    else
-        return 1
-    fi
-}
-
+# --- Funções de Execução ---
 run_playbook() {
     local playbook_file="$1"
-    local extra_playbook_args=("${@:2}")
+    local foreground_log="/tmp/ansible_foreground_run.log"
     
     if ! is_playbook_implemented "$playbook_file"; then
         echo -e "${WARN_COLOR}Aviso: O Playbook 'playbooks/${playbook_file}' não está implementado.${RESET}"
@@ -105,118 +49,139 @@ run_playbook() {
     fi
 
     echo -e "\n${PROMPT_COLOR}Executando o playbook: ${playbook_file} no ambiente: ${ENV_NAME}${RESET}"
+    echo -e "${TAG_INFO} A saída completa será registrada em '${foreground_log}'.${RESET}"
     
     local ansible_args=()
-    # Lógica de senha do Vault, agora local para esta função
-    if grep -q "\$ANSIBLE_VAULT;" "vars/secrets.yml" 2>/dev/null; then
-        if [ -f "$VAULT_PASS_FILE" ]; then
-            ansible_args+=("--vault-password-file" "$VAULT_PASS_FILE")
-        elif [ -z "${TEMP_VAULT_FILE-}" ]; then
-            read -s -p "Vault password: " VAULT_PASSWORD_VAR
-            echo
-            export TEMP_VAULT_FILE
-            TEMP_VAULT_FILE=$(mktemp)
-            echo "$VAULT_PASSWORD_VAR" > "$TEMP_VAULT_FILE"
-            trap 'rm -f "$TEMP_VAULT_FILE"' EXIT
-            ansible_args+=("--vault-password-file" "$TEMP_VAULT_FILE")
-        else
-            ansible_args+=("--vault-password-file" "$TEMP_VAULT_FILE")
-        fi
+    if [ -f "$VAULT_PASS_FILE" ]; then
+        ansible_args+=("--vault-password-file" "$VAULT_PASS_FILE")
     fi
     
     local playbook_exit_code=0
-    ansible-playbook -i "${INVENTORY_FILE}" "playbooks/${playbook_file}" "${ansible_args[@]}" "${extra_playbook_args[@]}" || playbook_exit_code=$?
+    ansible-playbook -i "${INVENTORY_FILE}" "playbooks/${playbook_file}" "${ansible_args[@]}" > "$foreground_log" 2>&1 || playbook_exit_code=$?
+
+    echo -e "\n${HEADER_COLOR}--- Saída do Playbook '${playbook_file}' ---${RESET}"
+    cat "$foreground_log"
+    echo -e "${HEADER_COLOR}--- Fim da Saída do Playbook ---${RESET}\n"
 
     if [ $playbook_exit_code -eq 0 ]; then
         echo -e "${GREEN}✓ Playbook '${playbook_file}' concluído com sucesso.${RESET}"
+        rm -f "$foreground_log"
         return 0
     else
-        echo -e "${DANGER_COLOR}✗ ERRO: O playbook '${playbook_file}' falhou.${RESET}"
+        echo -e "${DANGER_COLOR}✗ ERRO: O playbook '${playbook_file}' falhou. O log foi preservado em '${foreground_log}'.${RESET}"
         return 1
     fi
 }
 
-# --- Funções de UI e Menu ---
+# --- Funções de Lógica e Menu ---
+load_env_vars_from_inventory() {
+    local env_file="$1"
+    JUJU_MODEL_NAME=$(awk -F'=' '/^model_name/{print $2}' "$env_file" 2>/dev/null | tr -d ' ' || echo "")
+    JUJU_CONTROLLER_NAME=$(awk -F'=' '/^controller_name/{print $2}' "$env_file" 2>/dev/null | tr -d ' ' || echo "")
+}
 
-print_light_header() {
+run_inventory_configurator_wizard() {
+    local inventory_file="$1"
+    local env_name_for_wizard="$2"
+    local num_nodes
+    local node_details=""
+    local all_vars_section=""
+    local jump_host_spec=""
+    local ansible_user_input=""
+    local ssh_key_path_input=""
+
     clear
-    echo -e "${TITLE_COLOR}=== SETUP DO CLUSTER LANDSCAPE | Ambiente: [${ENV_NAME}] ===${RESET}"
-    echo ""
+    echo -e "${TITLE_COLOR}=== CONFIGURAÇÃO INTERATIVA DO INVENTÁRIO DE ${env_name_for_wizard^^} ===${RESET}"
+    echo -e "${TAG_INFO} Este assistente irá guiá-lo na criação do seu '${inventory_file}'."
+
+    while true; do
+        read -r -p "$(echo -e "${TAG_ACTION} Quantos nós o cluster ${env_name_for_wizard} terá? [Padrão: 2]: ${RESET}")" num_nodes
+        num_nodes=${num_nodes:-2}
+        if [[ "$num_nodes" =~ ^[1-9][0-9]*$ ]]; then break; else echo -e "${DANGER_COLOR}Número inválido.${RESET}"; fi
+    done
+
+    read -r -p "$(echo -e "${TAG_ACTION} Qual usuário para conexão SSH (ansible_user)? [Padrão: serpro]: ${RESET}")" ansible_user_input
+    ansible_user_input=${ansible_user_input:-serpro}
+
+    read -r -p "$(echo -e "${TAG_ACTION} Caminho para a chave SSH privada? [Padrão: ~/.ssh/id_ed25519]: ${RESET}")" ssh_key_path_input
+    ssh_key_path_input=${ssh_key_path_input:-~/.ssh/id_ed25519}
+
+    if confirm_action "Deseja utilizar um Bastion Host (Servidor de Entreposto)?"; then
+        read -r -p "$(echo -e "${TAG_ACTION} Informe o usuário e o endereço do Bastion Host (user@host): ${RESET}")" jump_host_spec
+        if [ -n "$jump_host_spec" ]; then
+            all_vars_section+="ansible_ssh_common_args='-o ProxyJump=$jump_host_spec -A'\n"
+        fi
+    fi
+
+    for i in $(seq 1 "$num_nodes"); do
+        local node_name="${env_name_for_wizard,,}-$(printf "%02d" "$i")"
+        local default_ansible_host="10.35.0.$(($i + 8))"
+        local ansible_host_input=""
+        echo -e "\n${HEADER_COLOR}--- Configurando Nó ${i} (${node_name}) ---${RESET}"
+        read -r -p "$(echo -e "${TAG_ACTION} IP de gerenciamento (ansible_host) para ${node_name} [Padrão: ${default_ansible_host}]: ${RESET}")" ansible_host_input
+        ansible_host_input=${ansible_host_input:-$default_ansible_host}
+        node_details+="${node_name} ansible_host=${ansible_host_input}\n"
+    done
+
+    local sanitized_env_name=$(echo "$env_name_for_wizard" | sed 'y/áàâãäéèêëíìîïóòôõöúùûüç/aaaaaeeeeiiiiooooouuuuc/' | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')
+    local final_inventory_content="# Inventário para o ambiente de ${env_name_for_wizard}\n\n"
+    final_inventory_content+="[lxd_hosts]\n${node_details}\n"
+    final_inventory_content+="[all:vars]\n"
+    final_inventory_content+="ansible_user=${ansible_user_input}\n"
+    final_inventory_content+="ansible_ssh_private_key_file=${ssh_key_path_input}\n"
+    final_inventory_content+="is_ha_cluster=$([ "$num_nodes" -gt 1 ] && echo true || echo false)\n"
+    final_inventory_content+="ansible_python_interpreter=/usr/bin/python3\n"
+    final_inventory_content+="controller_name=${sanitized_env_name}-controller\n"
+    final_inventory_content+="model_name=landscape-${sanitized_env_name}\n\n"
+    final_inventory_content+="$all_vars_section"
+
+    echo -e "\n${TAG_INFO} Gerando o arquivo '${inventory_file}'...${RESET}"
+    echo -e "$final_inventory_content" > "$inventory_file"
+    echo -e "${GREEN}✓ Inventário de ${env_name_for_wizard} configurado com sucesso.${RESET}"
+    pause_and_continue
+}
+
+select_inventory_to_configure() {
+    while true; do
+        clear; echo -e "${TITLE_COLOR}=== Selecionar Inventário para Configurar ===${RESET}"
+        printf "  ${OPTION_COLOR}%-40s\n" "1) Produção (inventory/production.ini)"
+        printf "  ${OPTION_COLOR}%-40s\n" "2) Homologação (inventory/homologacao.ini)"
+        printf "  ${OPTION_COLOR}%-40s\n" "3) Teste (inventory/testing.ini)"
+        printf "  ${OPTION_COLOR}%-40s\n" "0) Voltar ao Menu Principal"
+        echo ""
+        echo "---------------------------------------------------------------------"
+        local choice; read -r -p "$(echo -e "${TAG_ACTION} Selecione a opção: ${RESET}")" choice
+        case "$choice" in
+            1) run_inventory_configurator_wizard "inventory/production.ini" "Produção"; break ;;
+            2) run_inventory_configurator_wizard "inventory/homologacao.ini" "Homologação"; break ;;
+            3) run_inventory_configurator_wizard "inventory/testing.ini" "Teste"; break ;;
+            0) break ;;
+            *) echo -e "\n${DANGER_COLOR}Opção inválida.${RESET}"; sleep 1 ;;
+        esac
+    done
 }
 
 select_environment() {
-    echo "DEBUG: SCRIPT_VERSION no início de select_environment(): ${SCRIPT_VERSION}"
     while true; do
-        clear
-        echo -e "${TITLE_COLOR}"
-        echo "#####################################################################"
-        echo "#            SETUP DO CLUSTER LANDSCAPE - v${SCRIPT_VERSION}                     #"
-        echo "#             SERPRO | DIOPE/SUPOP/OPDIG/OPDTV             #"
-        echo "#####################################################################"
-        echo -e "${RESET}"
-
+        clear; echo -e "${TITLE_COLOR}#####################################################################"
+        echo "#          SETUP DO CLUSTER LANDSCAPE - v${SCRIPT_VERSION}          #"
+        echo "#          SERPRO | DIOPE/SUPOP/OPDIG/OPDTV         #"
+        echo -e "#####################################################################${RESET}\n"
         echo -e "${TAG_INFO} Escolha o ambiente do Landscape a ser gerenciado:"
-        echo ""
-        printf "  ${WARN_COLOR}%-25s ${DESC_COLOR}%s\n" "⚠️ 1) Produção" "- Ambiente ativo e crítico."
-        printf "  ${OPTION_COLOR}%-25s ${DESC_COLOR}%s\n" "2) Teste" "- Ambiente de homologação."
-        printf "  ${OPTION_COLOR}%-25s ${DESC_COLOR}%s\n" "3) Informações" "- Sobre e Contato."
-        printf "  ${OPTION_COLOR}%-25s ${DESC_COLOR}%s\n" "4) Sair" "- Encerrar o script."
-        echo ""
+        printf "  ${WARN_COLOR}%-30s ${DESC_COLOR}%s\n" "1) Produção" "- Ambiente ativo e crítico."
+        printf "  ${OPTION_COLOR}%-30s ${DESC_COLOR}%s\n" "2) Homologação" "- Espelho da produção para validação."
+        printf "  ${OPTION_COLOR}%-30s ${DESC_COLOR}%s\n" "3) Teste" "- Laboratório local para desenvolvimento."
+        printf "  ${OPTION_COLOR}%-30s ${DESC_COLOR}%s\n" "4) Configurar um Inventário" "- Guia para criar/atualizar um arquivo .ini."
+        printf "  ${OPTION_COLOR}%-30s ${DESC_COLOR}%s\n" "0) Sair" "- Encerrar o script."
         echo "---------------------------------------------------------------------"
-
-        local choice
-        read -p "$(echo -e "${TAG_ACTION} Selecione a opção desejada: ${RESET}")" choice
-
+        local choice; read -r -p "$(echo -e "${TAG_ACTION} Selecione a opção: ${RESET}")" choice
         case "$choice" in
-            1)
-                local prod_confirm
-                read -p "$(echo -e "\n${TAG_ACTION} ${WARN_COLOR}Você selecionou o ambiente de PRODUÇÃO. Esta ação é crítica. Deseja continuar? (s/N): ${RESET}")" prod_confirm
-                prod_confirm=${prod_confirm:-N}
-                if [[ "$prod_confirm" =~ ^[Ss]$ ]]; then
-                    ENV_NAME="Produção"
-                    INVENTORY_FILE="inventory/production.ini"
-                    return 0
-                else
-                    echo -e "${RED}Ação cancelada.${RESET}"
-                    sleep 1
-                    continue
-                fi
-                ;;
-            2)
-                ENV_NAME="Teste"
-                INVENTORY_FILE="inventory/testing.ini"
-                return 0
-                ;;
-            3)
-                clear
-                echo -e "${TITLE_COLOR}"
-                echo "#####################################################################"
-                echo "#                                                                   #"
-                echo "#             SOBRE A FERRAMENTA DE SETUP DO LANDSCAPE              #"
-                echo "#                                                                   #"
-                echo "#####################################################################"
-                echo -e "${RESET}"
-                echo -e "    ${TAG_INFO} Utilitário para automação da implantação e gerenciamento"
-                echo -e "           dos clusters do Canonical Landscape."
-                echo ""
-                echo -e "    ---------------------------------------------------------------"
-                echo ""
-                echo -e "      Versão           : ${SCRIPT_VERSION} (Estável)"
-                echo -e "      Mantenedores     : Equipe OPDTV | DIOPE/SUPOP/OPDIG"
-                echo -e "      Empresa          : SERPRO"
-                echo -e "      Canal de Suporte : lista-supop-opdig-opdtv @grupos.serpro.gov.br"
-                echo ""
-                echo -e "    ---------------------------------------------------------------"
-                echo ""
-                read -p "$(echo -e "    ${TAG_ACTION} Pressione [Enter] para voltar ao menu principal... █ ${RESET}")"
-                ;;
-            4)
-                exit 0
-                ;;
-            *)
-                echo -e "\n${DANGER_COLOR}Opção inválida. Por favor, tente novamente.${RESET}"
-                sleep 1
-                ;;
+            1) ENV_NAME="Produção"; INVENTORY_FILE="inventory/production.ini"; return 0 ;;
+            2) ENV_NAME="Homologação"; INVENTORY_FILE="inventory/homologacao.ini"; return 0 ;;
+            3) ENV_NAME="Teste"; INVENTORY_FILE="inventory/testing.ini"; return 0 ;;
+            4) select_inventory_to_configure; continue ;;
+            0) return 1 ;;
+            *) echo -e "\n${DANGER_COLOR}Opção inválida.${RESET}"; sleep 1 ;;
         esac
     done
 }
@@ -224,298 +189,77 @@ select_environment() {
 print_title_box() {
     clear
     local title_text="SETUP DO CLUSTER LANDSCAPE - AMBIENTE [${ENV_NAME}]"
-    local box_width=71
-    local text_len=${#title_text}
-    local padding=$(( (box_width - text_len) / 2 ))
-
+    local box_width=71; local text_len=${#title_text}; local padding=$(( (box_width - text_len) / 2 ))
     echo -e "${TITLE_COLOR}"
     echo "#######################################################################"
-    echo "#                                                                     #"
     printf "#%*s%s%*s#\n" $padding "" "$title_text" $((box_width - padding - text_len)) ""
-    echo "#                                                                     #"
-    echo "#######################################################################"
-    echo -e "${RESET}"
+    echo "#######################################################################${RESET}"
 }
 
-advanced_menu() {
-    while true; do
-        print_light_header
-        echo -e "${BLUE}Tarefas Avançadas – Administração Manual${RESET}"
-        echo "-----------------------------------------------------"
-
-        if [ -n "$LAST_ACTION_STATUS" ]; then
-            echo -e "[INFO] Última ação: $LAST_ACTION_STATUS\n"
-            LAST_ACTION_STATUS=""
-        fi
-
-        echo -e "${HEADER_COLOR}[Configuração]${RESET}"
-        printf "  ${OPTION_COLOR}%-40s\n" "⚙️ 1) Instalar Juju"
-        printf "  ${OPTION_COLOR}%-40s\n" "🚀 2) Implantar Aplicação"
-        printf "  ${OPTION_COLOR}%-40s\n" "🧩 3) Executar Pós-Configuração"
-        echo ""
-
-        echo -e "${HEADER_COLOR}[Integração]${RESET}"
-        printf "  ${OPTION_COLOR}%-40s\n" "🔐 4) Aplicar Certificado PFX"
-        printf "  ${OPTION_COLOR}%-40s\n" "🌐 5) Ativar Integração OIDC"
-        printf "  ${OPTION_COLOR}%-40s\n" "⛔ 6) Desativar Integração OIDC"
-        echo ""
-
-        echo -e "${HEADER_COLOR}[Rede e Segurança]${RESET}"
-        printf "  ${OPTION_COLOR}%-40s\n" "🛡️ 7) Aplicar Firewall Básico"
-        echo ""
-
-        echo -e "${HEADER_COLOR}[Sistema]${RESET}"
-        printf "  ${OPTION_COLOR}%-40s\n" "↩️ 8) Voltar ao Menu Principal"
-        echo "-----------------------------------------------------"
-
-        local choice
-        read -p "$(echo -e "${TAG_ACTION}Escolha a opção desejada: ${RESET}")" choice
-
-        case "$choice" in
-            1) 
-                if confirm_action "Executar a instalação do Juju?"; then
-                    if run_playbook "02-bootstrap-juju.yml"; then LAST_ACTION_STATUS="${GREEN}✓ Sucesso: Juju instalado.${RESET}"; else LAST_ACTION_STATUS="${DANGER_COLOR}✗ Falha: Instalação do Juju.${RESET}"; fi
-                fi
-                pause_and_continue; ;;
-            2) 
-                if confirm_action "Executar a implantação da aplicação?"; then
-                    if run_playbook "03-deploy-application.yml"; then LAST_ACTION_STATUS="${GREEN}✓ Sucesso: Aplicação implantada.${RESET}"; else LAST_ACTION_STATUS="${DANGER_COLOR}✗ Falha: Implantação da Aplicação.${RESET}"; fi
-                fi
-                pause_and_continue; ;;
-            3) 
-                if confirm_action "Executar a pós-configuração?"; then
-                    if run_playbook "05-post-config.yml"; then LAST_ACTION_STATUS="${GREEN}✓ Sucesso: Pós-configuração aplicada.${RESET}"; else LAST_ACTION_STATUS="${DANGER_COLOR}✗ Falha: Pós-configuração.${RESET}"; fi
-                fi
-                pause_and_continue; ;;
-            4) 
-                if confirm_action "Aplicar o certificado PFX? Esta ação pode ser disruptiva."; then
-                    if run_playbook "07-apply-pfx-cert.yml"; then LAST_ACTION_STATUS="${GREEN}✓ Sucesso: Certificado PFX aplicado.${RESET}"; else LAST_ACTION_STATUS="${DANGER_COLOR}✗ Falha: Aplicação do certificado PFX.${RESET}"; fi
-                fi
-                pause_and_continue; ;;
-            5) 
-                if confirm_action "Ativar a integração OIDC? Esta ação pode ser disruptiva."; then
-                    if run_playbook "10-enable-oidc.yml"; then LAST_ACTION_STATUS="${GREEN}✓ Sucesso: Integração OIDC ativada.${RESET}"; else LAST_ACTION_STATUS="${DANGER_COLOR}✗ Falha: Ativação do OIDC.${RESET}"; fi
-                fi
-                pause_and_continue; ;;
-            6) 
-                if confirm_action "Desativar a integração OIDC? Esta ação pode ser disruptiva."; then
-                    if run_playbook "11-disable-oidc.yml"; then LAST_ACTION_STATUS="${GREEN}✓ Sucesso: Integração OIDC desativada.${RESET}"; else LAST_ACTION_STATUS="${DANGER_COLOR}✗ Falha: Desativação do OIDC.${RESET}"; fi
-                fi
-                pause_and_continue; ;;
-            7) 
-                if confirm_action "Aplicar as regras de firewall? Isso pode impactar a conectividade."; then
-                    if run_playbook "09-harden-firewall.yml"; then LAST_ACTION_STATUS="${GREEN}✓ Sucesso: Firewall aplicado.${RESET}"; else LAST_ACTION_STATUS="${DANGER_COLOR}✗ Falha: Aplicação do firewall.${RESET}"; fi
-                fi
-                pause_and_continue; ;;
-            8) return ;;
-            *) echo -e "\n${DANGER_COLOR}Opção inválida.${RESET}"; pause_and_continue; ;;
-        esac
-    done
-}
 main_menu() {
     while true; do
         print_title_box
-        echo -e "${TAG_INFO} SERPRO | DIOPE/SUPOP/OPDIG/OPDTV"
         echo -e "${TAG_INFO} Ambiente Selecionado: ${BOLD}${ENV_NAME}${RESET}"
+        if [ -n "${JUJU_MODEL_NAME-}" ]; then echo -e "${TAG_INFO} Modelo Juju: ${BOLD}${JUJU_MODEL_NAME}${RESET}"; fi
         echo "---------------------------------------------------------------------"
         echo -e "Selecione uma operação para o ambiente:"
-        echo ""
 
-        if [ "$ENV_NAME" == "Teste" ]; then
-            echo -e "${HEADER_COLOR}[1] Ciclo de Vida do Ambiente${RESET}"
-            printf "  ${OPTION_COLOR}%-35s ${DESC_COLOR}%s\n" "1) Implantar Cluster" "- Cria um novo cluster limpo."
-            printf "  ${OPTION_COLOR}%-35s ${DESC_COLOR}%s\n" "2) Reconstruir Cluster" "- Remove e recria o cluster de teste."
-            echo ""
-        fi
+        echo -e "\n${HEADER_COLOR}[1] Orquestração Principal${RESET}"
+        printf "  ${OPTION_COLOR}%-35s %s\n" "1) Preparar Infraestrutura" "- (Ansible) Instala LXD, Juju, redes, etc."
+        printf "  ${OPTION_COLOR}%-35s %s\n" "2) Implantar Aplicações" "- (Juju) Cria o controller e implanta o Landscape."
 
-        echo -e "${HEADER_COLOR}[2] Diagnóstico${RESET}"
-        printf "  ${OPTION_COLOR}%-35s ${DESC_COLOR}%s\n" "3) Exibir Status do Ambiente" "- Mostra o status Juju atual."
-        printf "  ${OPTION_COLOR}%-35s ${DESC_COLOR}%s\n" "4) Verificar Certificado HAProxy" "- Exibe validade e detalhes do certificado."
-        printf "  ${OPTION_COLOR}%-35s ${DESC_COLOR}%s\n" "5) Executar Health Check" "- Avalia a integridade do cluster."
-        echo ""
+        echo -e "\n${HEADER_COLOR}[2] Diagnóstico & Operações${RESET}"
+        printf "  ${OPTION_COLOR}%-35s %s\n" "4) Exibir Status do Juju" "- Mostra o status do modelo Juju."
 
-        echo -e "${DANGER_COLOR}[3] Operações Destrutivas ⚠️${RESET}"
-        printf "  ${DANGER_COLOR}%-35s ${DESC_COLOR}%s\n" "6) Destruir Ambiente (IRREVERSÍVEL)" "- Remove completamente o ambiente."
-        echo ""
+        echo -e "\n${DANGER_COLOR}[3] Operações Destrutivas ⚠️${RESET}"
+        printf "  ${DANGER_COLOR}%-35s %s\n" "8) Destruir Ambiente (Total)" "- A forma mais segura e completa de limpar o ambiente."
 
-        echo -e "${HEADER_COLOR}[4] Outras Opções${RESET}"
-        printf "  ${OPTION_COLOR}%-35s ${DESC_COLOR}%s\n" "7) Tarefas Avançadas (Manuais)" "- Submenu de ações granulares."
-        printf "  ${OPTION_COLOR}%-35s ${DESC_COLOR}%s\n" "8) Sair" "- Encerra o script."
+        echo -e "\n${HEADER_COLOR}[4] Outras Opções${RESET}"
+        printf "  ${OPTION_COLOR}%-35s %s\n" "0) Voltar ao Menu Principal" "- Retorna à seleção de ambiente."
+
         echo "---------------------------------------------------------------------"
-
-        local choice
-        read -p "$(echo -e "${TAG_ACTION}Escolha a opção desejada: ${RESET}")" choice
-
+        local choice; read -r -p "$(echo -e "${TAG_ACTION}Escolha a opção: ${RESET}")" choice
         case "$choice" in
-            1)  # Implantar
-                if [ "$ENV_NAME" != "Teste" ]; then echo -e "${DANGER_COLOR}Opção inválida.${RESET}"; pause_and_continue; continue; fi
-                run_playbook "00-prepare-vms.yml" && run_playbook "01-setup-cluster-lxd.yml" && run_playbook "02-bootstrap-juju.yml" && run_playbook "03-deploy-application.yml" && run_playbook "98-verify-health.yml" && run_playbook "06-expose-proxy.yml" || echo -e "${DANGER_COLOR}A macro falhou.${RESET}"
-                pause_and_continue; ;;
-            2)  # Reconstruir
-                if [ "$ENV_NAME" != "Teste" ]; then echo -e "${DANGER_COLOR}Opção inválida.${RESET}"; pause_and_continue; continue; fi
-                if confirm_action "RECONSTRUIR irá DEMOLIR e recriar o Cluster ${ENV_NAME}."; then
-                    run_playbook "99-destroy-application.yml" && run_playbook "00-prepare-vms.yml" && run_playbook "01-setup-cluster-lxd.yml" && run_playbook "02-bootstrap-juju.yml" && run_playbook "03-deploy-application.yml" && run_playbook "98-verify-health.yml" && run_playbook "06-expose-proxy.yml" || echo -e "${DANGER_COLOR}A macro falhou.${RESET}"
-                fi
-                pause_and_continue; ;;
-            3)  # Verificar Status
-                local model_name=$(grep -E '^model_name=' "${INVENTORY_FILE}" | cut -d'=' -f2)
-                local exit_code=0
-                sg lxd -c "juju status -m '${model_name}'" || exit_code=$?
-                if [ $exit_code -ne 0 ]; then
-                    echo -e "\n${WARN_COLOR}----------------------------------------------------------------------"
-                    echo -e "AVISO: O comando 'juju status' falhou (código: $exit_code)."
-                    echo -e "\n${TAG_INFO} Se a mensagem de erro acima for 'model not found', significa que o"
-                    echo -e "       ambiente '${model_name}' não existe ou já foi destruído."
-                    echo -e "----------------------------------------------------------------------${RESET}"
-                fi
-                pause_and_continue; ;;
-            4)  # Verificar Certificado
-                run_playbook "08-verify-certificate.yml"; pause_and_continue; ;;
-            5)  # Health Check
-                run_playbook "98-verify-health.yml"; pause_and_continue; ;;
-            6)  # Demolir
-                if confirm_action "Você tem CERTEZA que deseja DESTRUIR o Ambiente ${ENV_NAME} (IRREVERSÍVEL)?"; then
-                    run_playbook "99-destroy-application.yml"
-                fi
-                pause_and_continue; ;;
-            7) advanced_menu; ;;
-            8) exit 0; ;;
-            *) echo -e "\n${DANGER_COLOR}Opção inválida.${RESET}"; pause_and_continue; ;;
-esac
+            1) run_playbook "macro-prepare-infra.yml" ;;
+            2) run_playbook "macro-deploy-apps.yml" ;;
+            4) juju status -m "${JUJU_CONTROLLER_NAME}:${JUJU_MODEL_NAME}" --watch 1s || true ;;
+            8) if confirm_action "CERTEZA que deseja DESTRUIR TOTALMENTE o Ambiente ${ENV_NAME}?" && run_playbook "macro-destroy-total.yml"; then LAST_ACTION_STATUS="${GREEN}✓ Ambiente destruído.${RESET}"; else LAST_ACTION_STATUS="${RED}Ação cancelada.${RESET}"; fi ;;
+            0) return ;;
+            *) echo -e "\n${DANGER_COLOR}Opção inválida.${RESET}";;
+        esac
+        pause_and_continue
     done
 }
-# --- Ponto de Entrada do Script ---
 
-ensure_persistent_session() {
-    # Se o script for chamado com um marcador interno, não faça nada para evitar loop infinito.
-    if [[ "${1-}" == "--no-tmux-wrap" ]]; then
-        shift
-        return 0
-    fi
-
-    # Se já estivermos em tmux ou screen, não faça nada.
-    if [ -n "${TMUX-}" ] || [ -n "${STY-}" ]; then
-        return 0
-    fi
-
-    # Verifica se existe uma sessão tmux destacada com o nome esperado.
-    if command -v tmux &> /dev/null && tmux has-session -t "landscape-automation" 2>/dev/null; then
-        echo -e "${TAG_INFO} Encontrei uma sessão 'tmux' existente chamada 'landscape-automation'." >&2
-        read -p "$(echo -e "${TAG_ACTION} Deseja se reconectar a ela? (S/n): ${RESET}")" response
-        response=${response:-S}
-        if [[ "$response" =~ ^[Ss]$ ]]; then
-            echo -e "${GREEN}Reconectando à sessão 'tmux'...${RESET}"
-            sleep 1
-            exec tmux attach-session -t "landscape-automation"
-        fi
-    # Senão, verifica se existe uma sessão screen
-    elif command -v screen &> /dev/null && screen -ls | grep -q "\.landscape-automation\s"; then
-        echo -e "${TAG_INFO} Encontrei uma sessão 'screen' existente chamada 'landscape-automation'." >&2
-        read -p "$(echo -e "${TAG_ACTION} Deseja se reconectar a ela? (S/n): ${RESET}")" response
-        response=${response:-S}
-        if [[ "$response" =~ ^[Ss]$ ]]; then
-            echo -e "${GREEN}Reconectando à sessão 'screen'...${RESET}"
-            sleep 1
-            exec screen -r "landscape-automation"
-        fi
-    fi
-
-    # Se não houver sessão para reconectar, ou o usuário disse não, oferece para criar uma nova.
-    echo -e "${TAG_WARN} AVISO: Nenhuma sessão ativa encontrada. Sua sessão atual não é persistente." >&2
-    echo -e "${TAG_INFO} A execução de playbooks longos pode ser interrompida se sua conexão SSH cair." >&2
-    read -p "$(echo -e "${TAG_ACTION} Deseja iniciar uma nova sessão segura com 'tmux'? (S/n): ${RESET}")" response
-    response=${response:-S} # Padrão para Sim
-
-    if [[ ! "$response" =~ ^[Ss]$ ]]; then
-        echo -e "${TAG_INFO} Ok, continuando sem uma sessão persistente. Cuidado com desconexões!${RESET}"
-        sleep 2
-        return 0
-    fi
-
-    # Tenta usar tmux primeiro, se não, screen como fallback.
-    if command -v tmux &> /dev/null; then
-        echo -e "${GREEN}Iniciando dashboard com 'tmux'...${RESET}"
-        sleep 1
-        tmux new-session -s "landscape-automation" "$0 --no-tmux-wrap" \; \
-             split-window -v "juju status --watch 1s" \; \
-             select-pane -t 0
-        exit 0 # Sai do script pai para deixar o tmux controlar o terminal
-    elif command -v screen &> /dev/null; then
-        echo -e "${GREEN}TMUX não encontrado. Iniciando sessão simples com 'screen'...${RESET}"
-        sleep 1
-        screen -S "landscape-automation" "$0" "$@"
-        exit 0 # Sai do script pai para deixar o screen controlar o terminal
-    else
-        # Se nenhum dos dois for encontrado, oferece para instalar o tmux
-        echo -e "${TAG_WARN}AVISO: Nem 'tmux' nem 'screen' foram encontrados para criar uma sessão segura.${RESET}" >&2
-        read -p "$(echo -e "${TAG_ACTION}Deseja instalar o 'tmux' (recomendado) agora? (S/n): ${RESET}")" install_response
-        install_response=${install_response:-S}
-
-        if [[ "$install_response" =~ ^[Ss]$ ]]; then
-            echo -e "${TAG_INFO}Instalando o tmux...${RESET}"
-            if sudo apt update && sudo apt install -y tmux; then
-                echo -e "${GREEN}TMUX instalado com sucesso! Reiniciando o script dentro da nova sessão...${RESET}"
-                sleep 2
-                exec tmux new-session -s "landscape-automation" "$0 --no-tmux-wrap" \; \
-                     split-window -v "juju status --watch 1s" \; \
-                     select-pane -t 0
-            else
-                echo -e "${DANGER_COLOR}Falha ao instalar o tmux. Por favor, instale manualmente e execute o script novamente.${RESET}"
-                exit 1
-            fi
-        else
-            echo -e "${TAG_INFO}Ok, continuando sem uma sessão persistente. Cuidado com desconexões!${RESET}"
-            sleep 2
-            return 0
-        fi
-    fi
-}
-
-main() {
-    echo "DEBUG: SCRIPT_VERSION no início de main(): ${SCRIPT_VERSION}"
-    # Garante que o script rode em uma sessão persistente
-    ensure_persistent_session "$@"
-
-    echo -e "${TAG_ACTION}Verificando privilégios de administrador (sudo)...${RESET}"
-    # Tenta renovar o ticket do sudo silenciosamente. Se falhar, pede a senha.
-    if ! sudo -n true 2>/dev/null; then
-        echo -e "${TAG_INFO}A execução pode exigir privilégios de administrador.${RESET}"
-        sudo -v
-        if [ $? -ne 0 ]; then
-            echo -e "${DANGER_COLOR}Falha ao obter privilégios de sudo. Saindo.${RESET}"
-            exit 1
-        fi
-    fi
-    echo -e "${GREEN}Privilégios de sudo verificados.${RESET}"
-    echo ""
-
-    # Verifica se o Ansible está instalado
+# --- Funções de Inicialização ---
+initialize_dependencies() {
     if ! command -v ansible-playbook &> /dev/null; then
-        echo -e "${TAG_WARN}AVISO: O comando 'ansible-playbook' não foi encontrado.${RESET}" >&2
-        read -p "$(echo -e "${TAG_ACTION}Deseja instalar o Ansible agora (requer sudo)? (S/n): ${RESET}")" install_ansible
-        install_ansible=${install_ansible:-S}
-
-        if [[ "$install_ansible" =~ ^[Ss]$ ]]; then
-            echo -e "${TAG_INFO}Instalando o Ansible...${RESET}"
-            if sudo apt update && sudo apt install -y ansible; then
-                echo -e "${GREEN}Ansible instalado com sucesso!${RESET}"
-            else
-                echo -e "${DANGER_COLOR}Falha ao instalar o Ansible. Por favor, instale manualmente e execute o script novamente.${RESET}"
-                exit 1
-            fi
-        else
-            echo -e "${DANGER_COLOR}Ansible é necessário para continuar. Saindo.${RESET}"
-            exit 1
+        if confirm_action "Comando 'ansible-playbook' não encontrado. Instalar Ansible (requer sudo)?"; then
+            sudo apt update && sudo apt install -y ansible || die "Falha ao instalar Ansible."
+        else die "Ansible é necessário para continuar."; fi
+    fi
+    if ! command -v juju &> /dev/null; then
+        if confirm_action "Comando 'juju' não encontrado. Instalar Juju (requer sudo)?"; then
+            sudo snap install juju --classic || die "Falha ao instalar Juju."
+        else die "Juju é necessário para continuar."; fi
+    fi
+    if ! command -v tmux &> /dev/null && ! command -v screen &> /dev/null; then
+        echo -e "${TAG_WARN} Para execuções longas, recomenda-se usar uma sessão persistente (tmux ou screen)."
+        if confirm_action "Comando 'tmux' não encontrado. Instalar agora (requer sudo)?"; then
+            sudo apt update && sudo apt install -y tmux || echo -e "${WARN_COLOR}Falha ao instalar tmux. Continuando..."
         fi
     fi
-
-    # Lida com a senha do Vault de forma centralizada
-
-    if [ ! -d "playbooks" ] || [ ! -d "inventory" ]; then
-        die "Este script deve ser executado a partir do diretório raiz 'landscape-automation'."
-    fi
-    select_environment
-    main_menu
 }
 
-main "$@"
+# --- Função Principal ---
+main() {
+    initialize_dependencies
+    while true; do
+        select_environment || break
+        load_env_vars_from_inventory "$INVENTORY_FILE"
+        main_menu
+    done
+    echo -e "\n${GREEN}Encerrando o script. Até logo!${RESET}\n"
+}
+
+main

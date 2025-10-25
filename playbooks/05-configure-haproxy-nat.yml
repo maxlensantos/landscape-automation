@@ -1,13 +1,13 @@
 ---
 - name: Expose HAProxy to the Host Machine
-  hosts: all
+  hosts: controller
   gather_facts: no
   connection: local
   become: true # lxc commands need sudo
 
   tasks:
     - name: "Get Juju status to find HAProxy details"
-      ansible.builtin.command: sg lxd -c "juju status --format=json"
+      ansible.builtin.command: "juju status --format=json"
       register: juju_status_json
       changed_when: false
       become: false # juju commands run as user

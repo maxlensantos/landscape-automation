@@ -1,0 +1,8 @@
+applications:
+  landscape-server:
+    scale: 2
+  rabbitmq-server:
+    scale: 2
+  haproxy:
+    scale: 2
+  postgresql: {}

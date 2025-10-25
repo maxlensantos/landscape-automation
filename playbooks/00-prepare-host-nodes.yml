@@ -1,0 +1,117 @@
+---
+- name: Prepare Juju/LXD Host Nodes
+  hosts: lxd_hosts
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Set default iptables policies to ACCEPT
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - iptables -P INPUT ACCEPT
+        - iptables -P FORWARD ACCEPT
+        - iptables -P OUTPUT ACCEPT
+        - iptables -F
+        - iptables -X
+        - iptables -t nat -F
+        - iptables -t nat -X
+      changed_when: true
+      failed_when: false
+
+    - name: Allow all essential traffic
+      ansible.builtin.command: "iptables -A INPUT -p {{ item }} -j ACCEPT"
+      loop:
+        - tcp
+        - udp
+      changed_when: true
+
+    - name: Force inventory refresh
+      ansible.builtin.meta: refresh_inventory
+
+    - name: Update and upgrade apt packages
+      ansible.builtin.apt:
+        update_cache: yes
+        upgrade: "yes"
+        autoremove: yes
+
+    - name: Install essential system packages
+      ansible.builtin.apt:
+        name:
+          - software-properties-common
+          - curl
+          - git
+          - wget
+          - apt-transport-https
+          - ca-certificates
+          - nfs-common
+          - python3-pip # Required for some Ansible modules
+        state: present
+
+    - name: Install or update LXD snap
+      ansible.builtin.snap:
+        name: lxd
+        state: present
+
+    - name: Check if LXD storage pool 'default' already exists
+      ansible.builtin.command: lxc storage show default
+      register: lxd_storage_default
+      changed_when: false
+      failed_when: false # We expect this to fail if the pool doesn't exist
+
+    - name: Initialize LXD (if default storage pool does not exist)
+      ansible.builtin.command: lxd init --auto --storage-backend dir
+      when: lxd_storage_default.rc != 0
+      changed_when: true
+      notify: Restart lxd service
+
+    - name: Configure LXD default profile for nesting
+      ansible.builtin.command: lxc profile set default security.nesting=true
+      changed_when: true
+
+    - name: Configure LXD default profile for privileged containers
+      ansible.builtin.command: lxc profile set default security.privileged=true
+      changed_when: true
+
+    - name: Configure lxdbr0 bridge to use 172.16.0.1/24 subnet
+      ansible.builtin.command: "lxc network set lxdbr0 ipv4.address=172.16.0.1/24 ipv4.nat=true"
+      changed_when: true
+      notify: Restart lxd service
+
+    - name: Install or update Juju snap
+      ansible.builtin.snap:
+        name: juju
+        classic: yes
+        state: present
+
+    - name: Enable IP forwarding on all hosts
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        state: present
+        sysctl_file: /etc/sysctl.d/99-juju-forward.conf
+        reload: yes
+
+    - name: Create netplan route configuration on secondary nodes
+      ansible.builtin.copy:
+        dest: /etc/netplan/99-juju-route.yaml
+        content: |
+          network:
+            version: 2
+            ethernets:
+              {{ ansible_default_ipv4.interface }}:
+                routes:
+                  - to: 172.16.0.0/24
+                    via: {{ hostvars[groups['lxd_hosts'][0]]['ansible_host'] }}
+      when: inventory_hostname != groups['lxd_hosts'][0]
+
+    - name: Apply netplan configuration on secondary nodes
+      ansible.builtin.command: netplan apply
+      when: inventory_hostname != groups['lxd_hosts'][0]
+      changed_when: true
+
+  handlers:
+    - name: Restart lxd service
+      ansible.builtin.systemd:
+        name: snap.lxd.daemon
+        state: restarted
+      listen: "Restart lxd service"

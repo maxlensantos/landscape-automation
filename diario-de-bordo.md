@@ -1,5 +1,38 @@
 # Diário de Bordo: A Saga da Estabilização do `landscape-automation`
 
+**Autor:** Gemini, Engenheiro de Automação Sênior
+**Data:** 15 de Outubro de 2025
+
+## Missão: Refatoração da Arquitetura para Flexibilidade e Gerenciamento de NFS via Juju
+
+**Foco:** Reestruturar a automação para suportar implantações flexíveis em 1 ou 2 nós, centralizar a preparação de hosts e mover o gerenciamento do armazenamento NFS para dentro do modelo Juju, eliminando a necessidade de configuração manual nos hosts.
+
+- **`feat(arch)` - Preparação de Host Unificada:**
+  - **`Added`**: Criado o playbook `playbooks/00-prepare-host-nodes.yml`. Este novo playbook centraliza todas as tarefas de preparação de uma VM para se tornar um nó de cluster, incluindo instalação de pacotes, configuração de LXD, Juju e Iptables.
+  - **`Removed`**: O antigo playbook `playbooks/00-prepare-vms.yml` foi removido.
+
+- **`feat(arch)` - NFS como Serviço Juju:**
+  - **`Added`**: Criado o playbook `playbooks/00-deploy-nfs-server.yml` que implanta o charm `nfs-server` no Juju, configura o compartilhamento para o espelho APT e cria a relação com o `landscape-server`.
+  - **`Removed`**: Qualquer lógica de montagem de NFS foi removida da preparação dos hosts. O armazenamento agora é totalmente gerenciado pelo Juju.
+
+- **`refactor(core)` - Orquestração de Cluster Aprimorada:**
+  - **`Refactored`**: O playbook `playbooks/02-bootstrap-juju.yml` foi aprimorado para, além de fazer o bootstrap, adicionar automaticamente as máquinas do grupo `lxd_hosts` ao modelo Juju.
+  - **`Deprecated`**: O playbook `playbooks/01-setup-cluster-lxd.yml` foi esvaziado e marcado como obsoleto, pois suas responsabilidades foram absorvidas por outros playbooks.
+
+- **`refactor(ux)` - Atualização da Interface Principal:**
+  - **`Refactored`**: O script `setup.sh` foi atualizado para refletir a nova arquitetura.
+  - Adicionada a opção "1) Preparar Nós do Host" para execução independente.
+  - As macros "Implantar Cluster" e "Reconstruir Cluster" foram atualizadas com a nova sequência de playbooks, incluindo a implantação do NFS.
+
+- **`refactor(inventory)` - Padronização dos Inventários:**
+  - Os arquivos `inventory/testing.ini` e `inventory/production.ini` foram atualizados para usar um grupo padrão `[lxd_hosts]` para definir os nós do cluster, simplificando os playbooks.
+
+### Resultado da Missão
+
+A automação agora é significativamente mais flexível, permitindo a implantação em um ou dois nós com uma base de código mais limpa e modular. A mudança mais estratégica, o gerenciamento do NFS via Juju, simplifica drasticamente a configuração da infraestrutura subjacente e alinha o projeto ainda mais com o modelo de "tudo como código" centrado no Juju.
+
+---
+
 **Autor:** Gemini, Engenheiro de Automação Sênior (com colaboração do Operador)
 **Data:** 14 de Outubro de 2025 (Parte 2)
 
@@ -15,13 +48,13 @@ Após múltiplas tentativas falhas que resultaram em loops ou erros de sintaxe, 
 
 A solução definitiva foi abandonar as abordagens complexas e refatorar o `98-verify-health.yml` para usar um padrão de verificação canônico e robusto do Ansible.
 
--   **`Refactored(critical)` - Lógica de Verificação Externalizada e Simplificada:**
-    1.  A lógica de verificação foi permanentemente movida para um script Python autônomo (`playbooks/health_check.py`), desacoplando a lógica de verificação da orquestração.
-    2.  O playbook `98-verify-health.yml` foi completamente reescrito para usar uma única tarefa `ansible.builtin.shell` dentro de um loop `until`.
-    3.  Este comando único (`sg lxd -c 'juju status --format=json' | /usr/bin/python3 health_check.py`) combina a obtenção do status e a verificação, eliminando todas as variáveis intermediárias e problemas de `stdin`.
-    4.  O loop `until` agora verifica diretamente o código de retorno (`rc`) desta única tarefa, uma condição clara e infalível.
+- **`Refactored(critical)` - Lógica de Verificação Externalizada e Simplificada:**
+  1.  A lógica de verificação foi permanentemente movida para um script Python autônomo (`playbooks/health_check.py`), desacoplando a lógica de verificação da orquestração.
+  2.  O playbook `98-verify-health.yml` foi completamente reescrito para usar uma única tarefa `ansible.builtin.shell` dentro de um loop `until`.
+  3.  Este comando único (`sg lxd -c 'juju status --format=json' | /usr/bin/python3 health_check.py`) combina a obtenção do status e a verificação, eliminando todas as variáveis intermediárias e problemas de `stdin`.
+  4.  O loop `until` agora verifica diretamente o código de retorno (`rc`) desta única tarefa, uma condição clara e infalível.
 
--   **`Fixed` - Robustez do Playbook de Limpeza:** O playbook `99-destroy-application.yml` foi aprimorado para ignorar erros ao tentar matar um controlador Juju que já não existe, tornando o processo de limpeza totalmente idempotente.
+- **`Fixed` - Robustez do Playbook de Limpeza:** O playbook `99-destroy-application.yml` foi aprimorado para ignorar erros ao tentar matar um controlador Juju que já não existe, tornando o processo de limpeza totalmente idempotente.
 
 ### Resultado da Missão
 
@@ -106,18 +139,18 @@ O processo de depuração seguiu uma trilha lógica, descendo a cada passo uma c
 A investigação inicial, utilizando `juju debug-log` e `juju debug-hooks`, revelou uma série de problemas que, no final, apontavam para um bug no charm do `haproxy`.
 
 - **Descobertas Chave:**
-    1.  **Erro de Encoding:** O charm esperava uma configuração de certificado em **Base64**, mas a automação enviava texto puro.
-    2.  **Erro de Formatação:** Mesmo após corrigir o encoding, o `haproxy` ainda falhava. A inspeção manual do arquivo de certificado dentro do contêiner revelou a causa raiz final: o charm concatenava o certificado e a chave **sem uma quebra de linha** entre eles, gerando um arquivo `.pem` inválido.
+  1.  **Erro de Encoding:** O charm esperava uma configuração de certificado em **Base64**, mas a automação enviava texto puro.
+  2.  **Erro de Formatação:** Mesmo após corrigir o encoding, o `haproxy` ainda falhava. A inspeção manual do arquivo de certificado dentro do contêiner revelou a causa raiz final: o charm concatenava o certificado e a chave **sem uma quebra de linha** entre eles, gerando um arquivo `.pem` inválido.
 
 - **Solução (Workaround):** Implementamos um workaround no playbook `03-deploy-application.yml` para adicionar uma quebra de linha (`
-`) ao final do certificado *antes* da codificação em Base64, garantindo que o arquivo final gerado pelo charm fosse válido.
+`) ao final do certificado _antes_ da codificação em Base64, garantindo que o arquivo final gerado pelo charm fosse válido.
 
 ### Fase 2: A Reviravolta Arquitetural
 
 Com base em um relatório técnico e na análise de projetos anteriores, identificamos uma falha estratégica na abordagem de configuração.
 
-- **Problema:** A configuração do SSL era aplicada em um playbook separado (`05-post-config.yml`) *após* o deploy, criando uma janela de tempo para a **condição de corrida** que causava a falha intermitente do hook.
-- **Solução Definitiva:** Adotamos uma estratégia de **deploy atômico**. A lógica de geração de certificado foi movida para o `03-deploy-application.yml`, que agora gera um arquivo de *overlay* do Juju. Este overlay é passado para o comando `juju deploy` com a flag `--overlay`, garantindo que a configuração do certificado seja aplicada no momento da implantação e eliminando a causa raiz da instabilidade.
+- **Problema:** A configuração do SSL era aplicada em um playbook separado (`05-post-config.yml`) _após_ o deploy, criando uma janela de tempo para a **condição de corrida** que causava a falha intermitente do hook.
+- **Solução Definitiva:** Adotamos uma estratégia de **deploy atômico**. A lógica de geração de certificado foi movida para o `03-deploy-application.yml`, que agora gera um arquivo de _overlay_ do Juju. Este overlay é passado para o comando `juju deploy` com a flag `--overlay`, garantindo que a configuração do certificado seja aplicada no momento da implantação e eliminando a causa raiz da instabilidade.
 
 ### Fase 3: Blindagem e Evolução Final
 
@@ -148,8 +181,8 @@ Esta sessão foi uma continuação direta da depuração anterior, focada em ref
 Após as correções anteriores, um novo teste de reconstrução do cluster revelou um novo comportamento: o playbook `98-verify-health.yml` falhava por timeout após 30 minutos.
 
 - **Descobertas Chave:**
-    1.  **Causa Raiz:** A análise de recursos (`top`, `free`) revelou que a máquina host estava com a **CPU 100% utilizada** durante o deploy, causando uma lentidão extrema na criação dos contêineres LXD.
-    2.  **Problema Real:** A falha não era um "travamento", mas sim uma "lentidão extrema". O insight crucial, apontado pelo operador, foi que o problema da automação não era a lentidão em si, mas sua **incapacidade de lidar com ela de forma graciosa**. O playbook era impaciente e seu feedback (um spinner) era inútil.
+  1.  **Causa Raiz:** A análise de recursos (`top`, `free`) revelou que a máquina host estava com a **CPU 100% utilizada** durante o deploy, causando uma lentidão extrema na criação dos contêineres LXD.
+  2.  **Problema Real:** A falha não era um "travamento", mas sim uma "lentidão extrema". O insight crucial, apontado pelo operador, foi que o problema da automação não era a lentidão em si, mas sua **incapacidade de lidar com ela de forma graciosa**. O playbook era impaciente e seu feedback (um spinner) era inútil.
 
 ### Fase 2: Implementando a Paciência e a Visibilidade
 
@@ -173,8 +206,8 @@ A execução do playbook `03-deploy-application.yml` falhava de forma consistent
 
 - **Erro Apresentado:** `ERROR options provided but not supported when deploying a charm: --overlay`.
 - **Causa Raiz:** A investigação revelou duas causas:
-    1.  O comando `juju deploy` para um único charm (como o `haproxy`) não suporta o parâmetro `--overlay`, que é destinado a bundles. A automação estava tentando usar um overlay para aplicar a configuração de SSL em um comando que não o aceitava.
-    2.  Um segundo bug foi identificado na geração do arquivo de overlay: a opção `ssl_key` estava recebendo o conteúdo do certificado (`cert_content_b64`) em vez do conteúdo da chave privada (`key_content_b64`).
+  1.  O comando `juju deploy` para um único charm (como o `haproxy`) não suporta o parâmetro `--overlay`, que é destinado a bundles. A automação estava tentando usar um overlay para aplicar a configuração de SSL em um comando que não o aceitava.
+  2.  Um segundo bug foi identificado na geração do arquivo de overlay: a opção `ssl_key` estava recebendo o conteúdo do certificado (`cert_content_b64`) em vez do conteúdo da chave privada (`key_content_b64`).
 
 ### Implementação da Solução
 
@@ -183,8 +216,8 @@ Para resolver os problemas, o playbook `03-deploy-application.yml` foi modificad
 1.  **Correção do Bug da Chave SSL:** O valor da `ssl_key` foi corrigido para usar a variável correta (`key_content_b64`), garantindo que a chave privada seja aplicada corretamente tanto no ambiente de teste quanto no de produção.
 
 2.  **Refatoração do Deploy do HAProxy:** A tarefa de implantação do `haproxy` no ambiente de teste foi dividida em duas etapas atômicas:
-    *   **Deploy:** O `haproxy` é primeiro implantado sem nenhuma configuração, usando um comando `juju deploy` simples.
-    *   **Configuração:** Em seguida, um novo passo executa `juju config` para aplicar as configurações de `ssl_cert` and `ssl_key` diretamente no charm, evitando o uso do `--overlay`.
+    - **Deploy:** O `haproxy` é primeiro implantado sem nenhuma configuração, usando um comando `juju deploy` simples.
+    - **Configuração:** Em seguida, um novo passo executa `juju config` para aplicar as configurações de `ssl_cert` and `ssl_key` diretamente no charm, evitando o uso do `--overlay`.
 
 ### Resultado
 
@@ -199,16 +232,16 @@ Após as correções anteriores, o playbook `03-deploy-application.yml` passou a
 ### Diagnóstico do Problema
 
 - **Erro Apresentado:** A tarefa `Wait for landscape-server to be active` falhava após 10 minutos.
-- **Causa Raiz:** A análise do `juju status` mostrou que o `landscape-server` estava permanentemente no estado `waiting` com a mensagem `Waiting on relations: db, amqp, haproxy`. Isso revelou um **impasse lógico** no playbook: o script esperava o `landscape-server` ficar ativo *antes* de criar as próprias relações que ele necessitava para se tornar ativo.
+- **Causa Raiz:** A análise do `juju status` mostrou que o `landscape-server` estava permanentemente no estado `waiting` com a mensagem `Waiting on relations: db, amqp, haproxy`. Isso revelou um **impasse lógico** no playbook: o script esperava o `landscape-server` ficar ativo _antes_ de criar as próprias relações que ele necessitava para se tornar ativo.
 
 ### Implementação da Solução
 
-1.  **Correção da Ordem Lógica:** A ordem das tarefas no `03-deploy-application.yml` foi corrigida. A tarefa de espera do `landscape-server` foi movida para o final do bloco, *após* a criação de todas as suas relações de dependência (`postgresql`, `rabbitmq-server`, `haproxy`). Isso resolveu o impasse e permitiu que a aplicação ficasse ativa.
+1.  **Correção da Ordem Lógica:** A ordem das tarefas no `03-deploy-application.yml` foi corrigida. A tarefa de espera do `landscape-server` foi movida para o final do bloco, _após_ a criação de todas as suas relações de dependência (`postgresql`, `rabbitmq-server`, `haproxy`). Isso resolveu o impasse e permitiu que a aplicação ficasse ativa.
 
 2.  **Melhoria de UX na Espera (Humanização da Saída):** Para evitar a poluição visual das mensagens de "FAILED - RETRYING", todas as tarefas de espera baseadas em laços `until` foram substituídas pelo comando `juju wait-for application`. Essa abordagem:
-    *   Delega a lógica de espera para o próprio Juju.
-    *   Produz uma saída limpa no console, onde o Ansible simplesmente aguarda a conclusão da tarefa.
-    *   Melhora drasticamente a experiência do operador, que não é mais inundado com mensagens de erro durante um processo de espera normal.
+    - Delega a lógica de espera para o próprio Juju.
+    - Produz uma saída limpa no console, onde o Ansible simplesmente aguarda a conclusão da tarefa.
+    - Melhora drasticamente a experiência do operador, que não é mais inundado com mensagens de erro durante um processo de espera normal.
 
 ### Resultado
 
@@ -226,8 +259,8 @@ A execução autônoma permitiu uma análise iterativa e profunda.
 
 1.  **Hipótese 1 (Falha de Chave):** A primeira correção defensiva (`status.get('applications', {})`) não resolveu o problema, indicando que a falha não era apenas uma chave ausente.
 2.  **Hipótese 2 (Falha de Atributo Aninhado):** A segunda refatoração, quebrando a lógica em múltiplas tarefas, também falhou. Isso provou que o problema não estava na lógica em si, mas na forma como o motor Jinja2 do Ansible processava a estrutura de dados.
-3.  **Hipótese 3 (Entrada Inválida para `from_json`):** A análise da terceira falha revelou a causa raiz definitiva. O comando `juju status` podia, em raras ocasiões, retornar uma *string vazia* para o `stdout` enquanto o modelo estava em transição. O script Python tentava analisar essa string vazia como JSON, resultando em um erro de `JSONDecodeError` que, por sua vez, causava a falha do playbook.
-4.  **Hipótese 4 (Tipo de Dado em Loop):** A última falha ocorreu porque a variável `error_units`, embora contivesse os dados corretos, era uma *string* em vez de uma *lista* Ansible, o que quebrava a diretiva `loop`.
+3.  **Hipótese 3 (Entrada Inválida para `from_json`):** A análise da terceira falha revelou a causa raiz definitiva. O comando `juju status` podia, em raras ocasiões, retornar uma _string vazia_ para o `stdout` enquanto o modelo estava em transição. O script Python tentava analisar essa string vazia como JSON, resultando em um erro de `JSONDecodeError` que, por sua vez, causava a falha do playbook.
+4.  **Hipótese 4 (Tipo de Dado em Loop):** A última falha ocorreu porque a variável `error_units`, embora contivesse os dados corretos, era uma _string_ em vez de uma _lista_ Ansible, o que quebrava a diretiva `loop`.
 
 ### Implementação da Solução Definitiva
 
@@ -243,6 +276,7 @@ Após a aplicação dessas correções, executei autonomamente o ciclo de recons
 A automação agora está estável, resiliente e robusta. O problema foi resolvido de forma definitiva. A missão está concluída.
 
 ---
+
 ## 10 de Outubro de 2025: Depuração Colaborativa e Estabilização Final
 
 **Autor:** Gemini, com colaboração do Operador
@@ -253,7 +287,7 @@ A automação agora está estável, resiliente e robusta. O problema foi resolvi
 
 Esta sessão foi um exemplo clássico de depuração em múltiplas camadas, onde cada correção revelava um problema mais profundo.
 
-1.  **Hipótese 1: Ordem de Operações.** A primeira tentativa foi garantir que a configuração SSL fosse aplicada *após* o deploy do `haproxy`, mas *antes* da criação da relação. A implementação se provou falha, pois a relação ainda era criada cedo demais.
+1.  **Hipótese 1: Ordem de Operações.** A primeira tentativa foi garantir que a configuração SSL fosse aplicada _após_ o deploy do `haproxy`, mas _antes_ da criação da relação. A implementação se provou falha, pois a relação ainda era criada cedo demais.
 
 2.  **Hipótese 2: Inconsistência de Ambiente.** A análise de um `juju status` fornecido pelo operador revelou a causa raiz da falha anterior: a minha tentativa de deploy imperativo não especificava a `series` do Ubuntu, resultando em um cluster com 3 versões de SO diferentes (`20.04`, `22.04`, `24.04`), uma configuração totalmente instável.
 
@@ -263,11 +297,11 @@ Esta sessão foi um exemplo clássico de depuração em múltiplas camadas, onde
 
 A solução final foi uma síntese de todas as lições aprendidas:
 
--   **`Refactored` - Retorno à Estratégia de Bundle:** O playbook `03-deploy-application.yml` foi drasticamente simplificado. Toda a lógica de deploy imperativo foi removida e substituída por um único comando, alinhado com a documentação e com a prática do `@playbook-lab`:
-    ```
-    juju deploy landscape-scalable --channel=stable --overlay <arquivo_ssl>
-    ```
--   **`Fixed` - Estabilização de Componentes:** A flag `--channel=stable` foi adicionada para garantir que não usaríamos mais o charm `beta` do `haproxy`, eliminando a instabilidade do componente como uma variável.
+- **`Refactored` - Retorno à Estratégia de Bundle:** O playbook `03-deploy-application.yml` foi drasticamente simplificado. Toda a lógica de deploy imperativo foi removida e substituída por um único comando, alinhado com a documentação e com a prática do `@playbook-lab`:
+  ```
+  juju deploy landscape-scalable --channel=stable --overlay <arquivo_ssl>
+  ```
+- **`Fixed` - Estabilização de Componentes:** A flag `--channel=stable` foi adicionada para garantir que não usaríamos mais o charm `beta` do `haproxy`, eliminando a instabilidade do componente como uma variável.
 
 ### Descoberta Final: O Mecanismo de Auto-Recuperação (Self-Healing)
 
@@ -280,6 +314,7 @@ O que parecia uma falha permanente era, na verdade, o playbook esperando o momen
 A automação agora está não apenas funcional, mas sua lógica e comportamento estão completamente compreendidos. O uso do bundle `stable` tornou o deploy mais rápido e previsível, e a compreensão do mecanismo de self-healing nos dá confiança para deixar a automação executar seu curso completo. A missão foi um sucesso.
 
 ---
+
 ## 12 de Outubro de 2025: Implementação de CI/CD e Melhorias na Verificação de Saúde
 
 **Autor:** Gemini, Engenheiro de Automação Sênior
@@ -290,21 +325,21 @@ A automação agora está não apenas funcional, mas sua lógica e comportamento
 
 Para garantir que as mudanças no projeto sejam validadas automaticamente e que a automação permaneça robusta, foi implementado um pipeline de CI/CD no GitLab.
 
--   **`Added` - Arquivo `.gitlab-ci.yml`:** Criado o arquivo de configuração do pipeline, definindo os seguintes estágios:
-    *   **`lint`**: Executa `ansible-lint`, `yamllint` e `shellcheck` para garantir a conformidade com padrões de código e evitar erros de sintaxe.
-    *   **`molecule_test`**: Executa testes de unidade/integração para playbooks Ansible usando Molecule. Uma configuração inicial foi criada para o playbook `00-prepare-vms`, verificando a instalação de pré-requisitos como `python3`, `snapd` e `python3-pip`.
-    *   **`integration_test`**: Executa o fluxo completo de implantação do cluster de teste, chamando os playbooks Ansible na sequência correta, similar ao que o `setup.sh` faria, mas de forma não interativa. Isso valida a integração de todos os componentes.
-    *   **`cleanup`**: Garante que os recursos do Juju e LXD criados durante os testes sejam removidos, mantendo o ambiente de CI limpo.
--   **`Added` - Configuração do Molecule:** Criada a estrutura `playbooks/00-prepare-vms/molecule/default` com os arquivos `molecule.yml`, `converge.yml` e `verify.yml` para testar o playbook `00-prepare-vms`.
--   **`Refactored` - Base de Jobs para CI:** Criado um template `.juju_lxd_base` no `.gitlab-ci.yml` para padronizar a configuração de ambientes de teste com Juju e LXD, incluindo a instalação de dependências e o bootstrap de um controlador Juju efêmero.
+- **`Added` - Arquivo `.gitlab-ci.yml`:** Criado o arquivo de configuração do pipeline, definindo os seguintes estágios:
+  - **`lint`**: Executa `ansible-lint`, `yamllint` e `shellcheck` para garantir a conformidade com padrões de código e evitar erros de sintaxe.
+  - **`molecule_test`**: Executa testes de unidade/integração para playbooks Ansible usando Molecule. Uma configuração inicial foi criada para o playbook `00-prepare-vms`, verificando a instalação de pré-requisitos como `python3`, `snapd` e `python3-pip`.
+  - **`integration_test`**: Executa o fluxo completo de implantação do cluster de teste, chamando os playbooks Ansible na sequência correta, similar ao que o `setup.sh` faria, mas de forma não interativa. Isso valida a integração de todos os componentes.
+  - **`cleanup`**: Garante que os recursos do Juju e LXD criados durante os testes sejam removidos, mantendo o ambiente de CI limpo.
+- **`Added` - Configuração do Molecule:** Criada a estrutura `playbooks/00-prepare-vms/molecule/default` com os arquivos `molecule.yml`, `converge.yml` e `verify.yml` para testar o playbook `00-prepare-vms`.
+- **`Refactored` - Base de Jobs para CI:** Criado um template `.juju_lxd_base` no `.gitlab-ci.yml` para padronizar a configuração de ambientes de teste com Juju e LXD, incluindo a instalação de dependências e o bootstrap de um controlador Juju efêmero.
 
 ### Correção na Lógica de Verificação de Saúde (`98-verify-health.yml` e `tasks/poll_status.yml`)
 
 Foi identificado e corrigido um problema no playbook de verificação de saúde que causava um loop infinito e um erro de variável indefinida (`problem_summary`) em certas condições.
 
--   **`Fixed` - Inicialização de `problem_summary`:** No `playbooks/98-verify-health.yml`, a variável `problem_summary` agora é inicializada como uma lista vazia antes de ser utilizada no bloco `Display HUMANIZED "Still Waiting" Message`. Isso evita o erro de variável indefinida quando todas as aplicações já estão ativas e a tarefa de geração de resumo é pulada.
--   **`Fixed` - Disponibilidade de `juju_status_json`:** Para garantir que o bloco de sucesso (`Display SUCCESS and Next Steps`) sempre tenha acesso aos dados mais recentes do `juju status`, o comando `juju status --format=json` é re-executado e registrado em `juju_status_json_final` antes de exibir as instruções finais.
--   **`Added` - Depuração no Script Python:** Adicionadas mensagens de depuração detalhadas ao script Python em `tasks/poll_status.yml` para exibir a saída completa e o código de retorno do script. Isso ajudará a diagnosticar com precisão por que a variável `all_apps_active` pode estar sendo avaliada incorretamente em cenários futuros.
+- **`Fixed` - Inicialização de `problem_summary`:** No `playbooks/98-verify-health.yml`, a variável `problem_summary` agora é inicializada como uma lista vazia antes de ser utilizada no bloco `Display HUMANIZED "Still Waiting" Message`. Isso evita o erro de variável indefinida quando todas as aplicações já estão ativas e a tarefa de geração de resumo é pulada.
+- **`Fixed` - Disponibilidade de `juju_status_json`:** Para garantir que o bloco de sucesso (`Display SUCCESS and Next Steps`) sempre tenha acesso aos dados mais recentes do `juju status`, o comando `juju status --format=json` é re-executado e registrado em `juju_status_json_final` antes de exibir as instruções finais.
+- **`Added` - Depuração no Script Python:** Adicionadas mensagens de depuração detalhadas ao script Python em `tasks/poll_status.yml` para exibir a saída completa e o código de retorno do script. Isso ajudará a diagnosticar com precisão por que a variável `all_apps_active` pode estar sendo avaliada incorretamente em cenários futuros.
 
 ### Resultado
 

@@ -1,33 +1,29 @@
 ---
 - name: Verify Juju Model Health and Provide Next Steps
-  hosts: all
-  gather_facts: no
+  hosts: controller
   connection: local
+  gather_facts: no
 
   vars:
-    health_check_retries: 240 # 60 minutes (240 retries * 15 seconds)
-    health_check_delay: 15
+    health_check_timeout: 60m
 
   tasks:
-    - name: Wait for applications to become active
-      ansible.builtin.shell:
-        cmd: "sg lxd -c 'juju status --format=json' | /usr/bin/python3 health_check.py"
-      args:
-        executable: /bin/bash
-        chdir: "{{ playbook_dir }}"
+    - name: "Display waiting message"
+      ansible.builtin.debug:
+        msg: "Aguardando o modelo Juju estabilizar. Isso pode levar vários minutos..."
+
+    - name: Wait for model to become active and idle
+      ansible.builtin.command: "juju wait-for model -m {{ model_name }} --timeout={{ health_check_timeout }}"
       register: health_check_result
-      until: health_check_result.rc == 0
-      retries: "{{ health_check_retries }}"
-      delay: "{{ health_check_delay }}"
       changed_when: false
-      ignore_errors: true # We check the final status manually
+      ignore_errors: true
 
     - name: Set final health status fact
       ansible.builtin.set_fact:
         all_apps_active: "{{ health_check_result.rc == 0 }}"
 
     - name: Get final Juju status for IP address
-      ansible.builtin.command: "sg lxd -c 'juju status --format=json'"
+      ansible.builtin.command: "juju status --format=json"
       register: final_juju_status
       changed_when: false
       when: all_apps_active
@@ -65,8 +61,16 @@
       ansible.builtin.debug:
         msg: |
           ######################################################################
-          #      A IMPLANTAÇÃO NÃO FOI CONCLUÍDA COM SUCESSO.                #
+          #         O CLUSTER NÃO ATINGIU UM ESTADO SAUDÁVEL.                  #
           ######################################################################
 
-          Ocorreu um timeout após {{ health_check_retries * health_check_delay / 60 }} minutos.
-          Use a opção "Verificar Status do Ambiente" no menu principal para investigar.
+          O tempo de espera de {{ health_check_timeout }} foi atingido e o cluster não
+          estabilizou (nem todas as aplicações estão no estado 'active/idle').
+
+          Ações recomendadas:
+          1. Use a opção "4) Exibir Status do Ambiente" no menu para ver o
+             estado detalhado das aplicações e identificar qual delas está
+             com problema.
+
+          2. Investigue os logs da(s) unidade(s) com problema para um
+             diagnóstico mais profundo.

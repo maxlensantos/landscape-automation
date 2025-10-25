@@ -1,0 +1,7 @@
+---
+# Playbook Mestre: Reconstrução completa do ambiente de Teste
+# Este playbook primeiro destrói o ambiente existente e depois importa a macro
+# de implantação para criar um novo.
+
+- import_playbook: macro-destroy-total.yml
+- import_playbook: macro-deploy-test.yml

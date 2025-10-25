@@ -1,0 +1,18 @@
+---
+- name: Deploy Juju and Applications
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  tasks:
+    - name: Run Juju Bootstrap and Machine Add Playbook
+      ansible.builtin.import_playbook: 01-bootstrap-and-add-machines.yml
+
+    - name: Run Application Deployment Playbook
+      ansible.builtin.import_playbook: 03-deploy-prod.yml
+
+    - name: Run NFS Server Deployment Playbook
+      ansible.builtin.import_playbook: 00-deploy-nfs-server.yml
+
+    - name: Run Health Check Playbook
+      ansible.builtin.import_playbook: 98-verify-health.yml

@@ -1,0 +1,6 @@
+---
+- name: Converge
+  hosts: all
+  # Importa o playbook principal que queremos testar.
+  # O caminho é relativo ao diretório do projeto.
+  import_playbook: ../../../../playbooks/09-harden-firewall.yml

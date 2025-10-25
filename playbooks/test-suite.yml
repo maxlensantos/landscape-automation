@@ -1,0 +1,3 @@
+- import_playbook: macro-rebuild-test.yml
+- import_playbook: 08-verify-certificate.yml
+- import_playbook: 06-configure-oidc.yml

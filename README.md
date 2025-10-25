@@ -7,9 +7,11 @@ Este projeto contém um conjunto de playbooks Ansible para automatizar a implant
 Esta automação utiliza uma abordagem híbrida, combinando **Ansible** para orquestração e **Juju** para modelagem de aplicação, garantindo uma implantação estável e de fácil manutenção.
 
 - **Automação Híbrida:** O Ansible gerencia a infraestrutura e o fluxo de trabalho, enquanto o Juju lida com o ciclo de vida complexo da aplicação Landscape, aproveitando o melhor de cada ferramenta.
+- **Orquestração de Cluster Flexível:** Suporte para implantações de 1 a 2 nós, utilizando um playbook unificado para preparar qualquer VM para se tornar um host do cluster.
+- **NFS Gerenciado pelo Juju:** O servidor NFS para os espelhos APT é implantado e gerenciado como um serviço dentro do cluster Juju, eliminando a necessidade de configuração manual nos hosts e simplificando a infraestrutura.
 - **Gerenciamento Multi-Ambiente:** Suporte nativo para ambientes de **Teste** (nó único) e **Produção** (multi-nó, HA), controlados de forma declarativa pelos arquivos de inventário.
-- **Deploy Atômico com Overlay:** A configuração de SSL é aplicada no momento do deploy via um *overlay* dinâmico, uma estratégia avançada que elimina condições de corrida e garante que o cluster inicie em um estado consistente.
-- **Ciclo de Vida Completo:** O `setup.sh` oferece macros para implantar, reconstruir e destruir ambientes de forma segura e previsível.
+- **Deploy Atômico com Overlay:** A configuração de SSL é aplicada no momento do deploy via um _overlay_ dinâmico, uma estratégia avançada que elimina condições de corrida e garante que o cluster inicie em um estado consistente.
+- **Ciclo de Vida Completo:** O `setup.sh` oferece macros para preparar nós, implantar, reconstruir e destruir ambientes de forma segura e previsível.
 - **Auto-Recuperação (Self-Healing):** O playbook de verificação de saúde monitora ativamente o estado do cluster e, ao detectar uma unidade em erro, tenta recuperá-la automaticamente executando `juju resolve`.
 - **UX Aprimorada (Feedback em Tempo Real):** Durante a longa espera do deploy, a automação exibe a saída do `juju status` em tempo real, permitindo que o operador acompanhe o progresso verdadeiro do cluster em vez de olhar para um spinner estático.
 - **Tolerância a Ambientes Lentos:** O tempo de espera da automação foi estendido para 60 minutos, tornando-a robusta o suficiente para ser executada com sucesso mesmo em laboratórios ou VMs com recursos de CPU limitados.
@@ -42,12 +44,20 @@ Você será solicitado a escolher entre **Teste** e **Produção**. A escolha do
 
 O menu principal oferece um controle completo sobre o ciclo de vida do cluster:
 
-- **`1) Implantar Cluster (Primeira Vez)`:** Executa a sequência completa de playbooks para criar um novo cluster a partir do zero. Ideal para a primeira execução.
-- **`2) Reconstruir Cluster (Ação Destrutiva)`:** A macro mais poderosa. Executa uma rotina de "terraplanagem" que destrói o controlador Juju, força a remoção de todos os contêineres LXD e limpa o cache local antes de iniciar uma nova implantação. É a forma mais segura de garantir um ambiente 100% limpo e resolver estados corrompidos.
-- **`3) Verificar Status do Ambiente`:** Ferramenta de diagnóstico que executa `juju status` no modelo correto, permitindo inspecionar o estado do cluster a qualquer momento.
-        printf "  ${OPTION_COLOR}%-32s ${DESC_COLOR}%s\n" "7) Tarefas Avançadas (Manuais)" "- Submenu de ações granulares."
-        printf "  ${OPTION_COLOR}%-32s ${DESC_COLOR}%s\n" "8) Aplicar Firewall Básico" "- Ativa o UFW com regras para SSH, HTTP e HTTPS."
-        printf "  ${OPTION_COLOR}%-32s ${DESC_COLOR}%s\n" "9) Sair" "- Encerra o script."
+#### Ambiente de Teste
+
+- **`1) Preparar Nós do Host`**: Executa o playbook para instalar todas as dependências e configurar as VMs que servirão como nós do cluster.
+- **`2) Implantar Cluster (Primeira Vez)`**: Executa a sequência completa de playbooks para criar um novo cluster a partir do zero. Ideal para a primeira execução.
+- **`3) Reconstruir Cluster (Ação Destrutiva)`**: A macro mais poderosa. Executa uma rotina de "terraplanagem" que destrói o ambiente Juju e o recria do zero. É a forma mais segura de garantir um ambiente 100% limpo.
+
+#### Diagnóstico e Outras Opções (Todos os Ambientes)
+
+- **`4) Exibir Status do Ambiente`**: Ferramenta de diagnóstico que executa `juju status` no modelo correto.
+- **`5) Verificar Certificado do HAProxy`**: Exibe os detalhes de validade do certificado SSL em uso.
+- **`6) Executar Health Check`**: Roda o playbook de verificação de saúde do cluster.
+- **`7) Destruir Ambiente (IRREVERSÍVEL)`**: Remove completamente o ambiente Juju.
+- **`8) Tarefas Avançadas (Manuais)`**: Submenu com ações granulares para administração.
+- **`9) Sair`**: Encerra o script.
 
 ### Detalhes do Menu de Ações Manuais (Avançado)
 
@@ -97,9 +107,19 @@ Uma vez dentro, você pode usar comandos padrão do Linux para investigar:
 
 Este acesso direto é uma ferramenta poderosa para entender o que o Juju e os charms configuraram em cada componente do cluster.
 
+## Segurança e CI/CD
+
+O arquivo `vars/secrets.yml` é criptografado usando `ansible-vault` para proteger dados sensíveis. Para executar a automação em um pipeline de CI/CD (como o GitLab CI), é crucial manusear a senha do vault de forma segura.
+
+- **NÃO** comite arquivos de senha (como `vault_pass.txt`) no repositório.
+- **USE** as variáveis de ambiente secretas do seu sistema de CI/CD para armazenar a senha. O pipeline neste projeto (`.gitlab-ci.yml`) espera que a senha esteja em uma variável secreta chamada `ANSIBLE_VAULT_PASSWORD`.
+
+Esta abordagem garante que os segredos não sejam expostos no código-fonte, alinhando-se com as melhores práticas de segurança.
+
 ## Histórico de Alterações
 
 **05/10/2025:**
+
 - **`Fixed`** Correção da falha de implantação do `haproxy` em ambiente de teste.
 - O playbook `03-deploy-application.yml` foi ajustado para separar o deploy da configuração do `haproxy`, resolvendo o erro com o uso do parâmetro `--overlay`.
 - Corrigido bug que aplicava o certificado SSL no lugar da chave privada.

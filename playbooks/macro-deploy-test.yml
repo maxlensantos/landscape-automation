@@ -1,0 +1,10 @@
+---
+# Playbook Mestre: Implantação completa do ambiente de Teste
+# Este playbook importa a sequência correta de playbooks para uma implantação limpa.
+
+- import_playbook: 00-prepare-host-nodes.yml
+- import_playbook: 01-bootstrap-and-add-machines.yml
+- import_playbook: 03-deploy-test.yml
+- import_playbook: 00-deploy-nfs-server.yml
+- import_playbook: 98-verify-health.yml
+- import_playbook: 05-configure-haproxy-nat.yml
