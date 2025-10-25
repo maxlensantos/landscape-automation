@@ -94,6 +94,12 @@ Para garantir a consistência e a qualidade, qualquer desenvolvedor (humano ou I
 2.  **Valide as mudanças:** Sempre execute a macro `RECONSTRUIR Ambiente de Teste Completo` para garantir que sua mudança não quebrou o ciclo de vida completo da automação.
 3.  **Documente as mudanças:** Após a implementação, atualize o `diario-de-bordo.md` e, se necessário, o `README.md`.
 
+## 5.1. Premissas de Compatibilidade
+
+- **Versão do Charm vs. Base do SO:** A versão de um charm do Juju, definida pelo seu canal (ex: `14/stable`), está diretamente atrelada à versão da base do sistema operacional (ex: `ubuntu@22.04`) em que ele pode ser implantado.
+- **Exemplo Crítico:** O charm `postgresql` no canal `14/stable` é compatível apenas com a base Ubuntu 22.04. Para uma base `Ubuntu 24.04`, é **mandatório** usar um canal compatível, como o `16/stable`.
+- **Diretriz:** Antes de definir um canal de charm nos playbooks, sempre verifique a compatibilidade com a base do SO de destino na página do charm no Charmhub.
+
 ## 6. Diretrizes para Assistentes de IA
 
 Qualquer assistente de IA que interaja com este codebase deve aderir estritamente às seguintes diretrizes para garantir consistência e qualidade:

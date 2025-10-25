@@ -5,31 +5,13 @@
   gather_facts: no
 
   tasks:
-    - name: "Ensure no juju processes are running"
-      ansible.builtin.command: "sudo killall -9 jujud || true"
-      changed_when: false # This is a cleanup step, not a state change
+    - name: "Run remove-juju-services script to clean agent state"
+      ansible.builtin.command: "sudo /usr/sbin/remove-juju-services"
+      changed_when: true
+      ignore_errors: true # This script might fail if there's nothing to remove, which is ok.
 
-    - name: "Remove Juju snap"
-      ansible.builtin.snap:
-        name: juju
-        state: absent
-
-    - name: "Ensure Juju system-level data is removed"
-      ansible.builtin.file:
-        path: /var/lib/juju
-        state: absent
-
-    - name: "Ensure Juju user-level data is removed"
-      ansible.builtin.file:
-        path: "/home/{{ ansible_user }}/snap/juju"
-        state: absent
-
-    - name: "Install Juju snap for a clean state"
+    - name: "Ensure Juju snap is reinstalled for a clean client state"
       ansible.builtin.snap:
         name: juju
         classic: yes
         state: present
-
-    - name: "Reload systemd daemon"
-      ansible.builtin.systemd:
-        daemon_reload: yes

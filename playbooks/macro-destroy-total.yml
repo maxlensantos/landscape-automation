@@ -1,11 +1,6 @@
 ---
-- name: Total Destruction Macro
-  hosts: localhost
-  connection: local
-  gather_facts: no
+- name: Graceful Destruction
+  ansible.builtin.import_playbook: 99-destroy-graceful.yml
 
-  - name: Run graceful destroy playbook
-    ansible.builtin.import_playbook: 99-destroy-graceful.yml
-
-  - name: Run agent cleanup playbook
-    ansible.builtin.import_playbook: 99-cleanup-agents.yml
+- name: Forceful Agent Cleanup
+  ansible.builtin.import_playbook: 99-cleanup-agents.yml

@@ -6,36 +6,36 @@
 
   tasks:
     - name: Deploy PostgreSQL to a new container on machine 0
-      ansible.builtin.command: "juju deploy postgresql --channel 14/stable --to lxc@0"
+      ansible.builtin.command: "/snap/bin/juju deploy postgresql --channel 16/stable --to 0"
       changed_when: true
 
     - name: Deploy RabbitMQ to a new container on machine 1
-      ansible.builtin.command: "juju deploy rabbitmq-server --channel 3.9/stable --to lxc@1"
+      ansible.builtin.command: "/snap/bin/juju deploy rabbitmq-server --channel 3.9/stable --to 1"
       changed_when: true
 
     - name: Deploy HAProxy to a new container on machine 0
-      ansible.builtin.command: "juju deploy haproxy --channel stable --to lxc@0"
+      ansible.builtin.command: "/snap/bin/juju deploy haproxy --channel stable --to 0"
       changed_when: true
 
-    - name: Deploy another HAProxy to a new container on machine 1
-      ansible.builtin.command: "juju deploy haproxy --channel stable --to lxc@1"
+    - name: Deploy another HAProxy unit to a new container on machine 1
+      ansible.builtin.command: "/snap/bin/juju add-unit haproxy --to 1"
       changed_when: true
 
     - name: Deploy Landscape Server to a new container on machine 0
-      ansible.builtin.command: "juju deploy landscape-server --channel stable --to lxc@0"
+      ansible.builtin.command: "/snap/bin/juju deploy landscape-server --channel stable --to 0"
       changed_when: true
 
-    - name: Deploy another Landscape Server to a new container on machine 1
-      ansible.builtin.command: "juju deploy landscape-server --channel stable --to lxc@1"
+    - name: Deploy another Landscape Server unit to a new container on machine 1
+      ansible.builtin.command: "/snap/bin/juju add-unit landscape-server --to 1"
       changed_when: true
 
     - name: Wait for all applications to be ready
-      ansible.builtin.command: "juju wait-for application -m {{ model_name }} --query=\"status=='active'\""
+      ansible.builtin.command: "/snap/bin/juju wait-for application -m {{ model_name }} --query=\"status=='active'\""
       changed_when: false
       timeout: 1800 # 30 minute timeout
 
     - name: Relate Landscape Server to PostgreSQL
-      ansible.builtin.command: "juju relate landscape-server:db postgresql:db"
+      ansible.builtin.command: "/snap/bin/juju relate landscape-server:db postgresql:db"
       changed_when: true
 
     - name: Relate Landscape Server to RabbitMQ
