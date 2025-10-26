@@ -12,11 +12,33 @@
       # This task is expected to fail if no controller exists. We treat that as a success.
       failed_when: "juju_controllers_result.rc != 0 and 'No controllers registered' not in juju_controllers_result.stderr"
 
-    - name: Bootstrap Juju controller
-      ansible.builtin.command: "/snap/bin/juju bootstrap localhost {{ controller_name }} --config 'security.privileged=true'"
+    - name: Bootstrap Juju controller with enhanced config
+      ansible.builtin.command: >
+        /snap/bin/juju bootstrap localhost {{ controller_name }}
+        --config 'security.privileged=true'
+        --config default-base=ubuntu@22.04
+        --config bootstrap-base=ubuntu@22.04
+        --model-default base=ubuntu@22.04
+      register: bootstrap_result
       changed_when: true
       become: no
-      ignore_errors: true # Ensures we proceed even if the controller already exists
+      ignore_errors: true
+      retries: 3
+      delay: 10
+
+    - name: Wait for controller to be ready
+      ansible.builtin.pause:
+        seconds: 30
+      when: bootstrap_result.changed
+
+    - name: Verify controller is responsive
+      ansible.builtin.command: "/snap/bin/juju version"
+      register: juju_version
+      retries: 5
+      delay: 10
+      until: juju_version.rc == 0
+      become: no
+      changed_when: false
 
     - name: Check if model already exists
       ansible.builtin.command: "/snap/bin/juju models"
