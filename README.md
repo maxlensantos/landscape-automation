@@ -124,3 +124,43 @@ Esta abordagem garante que os segredos não sejam expostos no código-fonte, ali
 - O playbook `03-deploy-application.yml` foi ajustado para separar o deploy da configuração do `haproxy`, resolvendo o erro com o uso do parâmetro `--overlay`.
 - Corrigido bug que aplicava o certificado SSL no lugar da chave privada.
 - Para detalhes técnicos, consulte o [Diário de Bordo](diario-de-bordo.md).
+
+## Estratégias de Deploy Suportadas
+
+### Estratégia 1: Single Node (Homologação)
+
+```bash
+# Configure: 1 nó apenas
+[lxd_hosts]
+homologacao-01 ansible_host=10.35.0.9
+
+# Execute
+./setup.sh
+→ Escolha Homologação
+→ Escolha Reconstruir Cluster
+```
+
+**Resultado:** Landscape funcional em 1 nó (15-30 min)
+
+### Estratégia 2: Multi-Node HA (Produção)
+
+```bash
+# Configure: 2+ nós
+[lxd_hosts]
+homologacao-01 ansible_host=10.35.0.9
+homologacao-02 ansible_host=10.35.0.10
+
+# Execute
+./setup.sh
+→ Escolha Produção
+→ Escolha Reconstruir Cluster
+```
+
+**Resultado:** Landscape HA com múltiplos nós (30-60 min)
+
+## Alinhamento com Canonical
+
+Este projeto segue parcialmente a documentação Canonical:
+- ✅ Usa `juju deploy landscape-scalable`
+- ✅ Escalas com units conforme Canonical
+- ⚠️ Mas gerencia nós remotos via SSH (extensão do padrão Canonical)

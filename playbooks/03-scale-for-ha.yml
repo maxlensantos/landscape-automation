@@ -1,0 +1,65 @@
+---
+- name: Scale Landscape Applications for High Availability
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  gather_facts: no
+  become: no
+
+  vars:
+    scale_units: "{{ ha_scale_factor | default(2) }}"
+
+  tasks:
+    - name: Check if cluster is HA enabled
+      debug:
+        msg: "HA scaling is {{ 'ENABLED' if (is_ha_cluster | default(false)) else 'DISABLED' }}"
+
+    - name: Get current application status
+      command: "/snap/bin/juju status --format=json -m {{ model_name }}"
+      register: status_json
+      changed_when: false
+      when: "is_ha_cluster | default(false)"
+
+    - name: Parse application units
+      set_fact:
+        app_units: "{{ (status_json.stdout | from_json).applications | dict2items | map(attribute='value.scale') | list }}"
+      when: "is_ha_cluster | default(false)"
+
+    - name: Scale landscape-server for HA
+      command: "/snap/bin/juju add-unit landscape-server -n {{ scale_units }} -m {{ model_name }}"
+      when: "is_ha_cluster | default(false)"
+      changed_when: true
+
+    - name: Scale haproxy for HA
+      command: "/snap/bin/juju add-unit haproxy -n {{ scale_units }} -m {{ model_name }}"
+      when: "is_ha_cluster | default(false)"
+      changed_when: true
+
+    - name: Scale postgresql for HA
+      command: "/snap/bin/juju add-unit postgresql -n {{ scale_units }} -m {{ model_name }}"
+      when: "is_ha_cluster | default(false)"
+      changed_when: true
+
+    - name: Scale rabbitmq-server for HA
+      command: "/snap/bin/juju add-unit rabbitmq-server -n {{ scale_units }} -m {{ model_name }}"
+      when: "is_ha_cluster | default(false)"
+      changed_when: true
+
+    - name: Wait for scaling to complete
+      command: "/snap/bin/juju wait-for model -m {{ model_name }} --timeout=30m"
+      when: "is_ha_cluster | default(false)"
+      changed_when: false
+
+    - name: Verify HA configuration
+      command: "/snap/bin/juju status --format=json -m {{ model_name }}"
+      register: final_status
+      changed_when: false
+      when: "is_ha_cluster | default(false)"
+
+    - name: Display HA status
+      debug:
+        msg: |
+          HA Scaling Summary:
+          - landscape-server units: {{ (final_status.stdout | from_json).applications.get('landscape-server', {}).get('scale', 0) if is_ha_cluster else 'N/A' }}
+          - haproxy units: {{ (final_status.stdout | from_json).applications.get('haproxy', {}).get('scale', 0) if is_ha_cluster else 'N/A' }}
+          - postgresql units: {{ (final_status.stdout | from_json).applications.get('postgresql', {}).get('scale', 0) if is_ha_cluster else 'N/A' }}
+          - rabbitmq-server units: {{ (final_status.stdout | from_json).applications.get('rabbitmq-server', {}).get('scale', 0) if is_ha_cluster else 'N/A' }}
+      when: "is_ha_cluster | default(false)"

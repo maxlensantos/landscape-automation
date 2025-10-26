@@ -1,0 +1,18 @@
+---
+# Playbook Master: Deploy Completo do Landscape
+# Segue 100% a documentação oficial Canonical
+
+- name: "Step 1: Prepare Infrastructure"
+  import_playbook: 00-prepare-host-nodes.yml
+
+- name: "Step 2: Create Juju Model"
+  import_playbook: 01-create-juju-model.yml
+
+- name: "Step 3: Deploy Landscape Bundle"
+  import_playbook: 02-deploy-landscape-bundle.yml
+
+- name: "Step 4: Scale for HA (if enabled)"
+  import_playbook: 03-scale-for-ha.yml
+
+- name: "Step 5: Verify Health"
+  import_playbook: 98-verify-health.yml

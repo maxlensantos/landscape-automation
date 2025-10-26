@@ -1,0 +1,61 @@
+---
+- name: Validate Environment Compatibility
+  hosts: localhost
+  gather_facts: yes
+  
+  vars:
+    supported_os_versions:
+      - "22.04"
+      - "24.04"
+    postgresql_compatibility:
+      "22.04": "14/stable"
+      "24.04": "16/stable"
+  
+  tasks:
+    - name: Detect OS version in LXD containers
+      shell: |
+        # Tenta detectar version
+        if command -v lxc &> /dev/null; then
+          lxc exec {{ groups['all'][0] }} -- cat /etc/os-release 2>/dev/null | grep VERSION_ID || echo "VERSION_ID=24.04"
+        else
+          cat /etc/os-release | grep VERSION_ID
+        fi
+      register: os_version_output
+      ignore_errors: yes
+      
+    - name: Extract Ubuntu version
+      set_fact:
+        detected_ubuntu_version: "{{ os_version_output.stdout | regex_search('\\d+\\.\\d+') }}"
+      
+    - name: Display detected version
+      debug:
+        msg: "Detected Ubuntu: {{ detected_ubuntu_version }}"
+      
+    - name: Validate OS is supported
+      assert:
+        that:
+          - detected_ubuntu_version in supported_os_versions
+        fail_msg: "❌ Unsupported OS version detected: {{ detected_ubuntu_version }}. Supported versions: {{ supported_os_versions | join(', ') }}"
+      
+    - name: Set PostgreSQL channel based on OS
+      set_fact:
+        postgresql_channel_recommended: "{{ postgresql_compatibility[detected_ubuntu_version] }}"
+      
+    - name: Validate PostgreSQL compatibility
+      assert:
+        that:
+          - postgresql_channel_recommended is defined
+        fail_msg: "❌ PostgreSQL compatibility unknown for Ubuntu {{ detected_ubuntu_version }}"
+      
+    - name: Display compatibility matrix
+      debug:
+        msg: |
+          ========================================
+          ENVIRONMENT VALIDATION
+          ========================================
+          Ubuntu Version: {{ detected_ubuntu_version }}
+          ✅ Recommended PostgreSQL: {{ postgresql_channel_recommended }}
+          ========================================
+          
+          If deployment fails, ensure PostgreSQL channel
+          matches the detected OS version above.

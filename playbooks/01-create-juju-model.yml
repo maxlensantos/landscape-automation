@@ -1,0 +1,38 @@
+---
+- name: Create Juju Model
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  gather_facts: no
+  become: no
+
+  tasks:
+    - name: Verify Juju is installed
+      command: "/snap/bin/juju version"
+      register: juju_check
+      changed_when: false
+      failed_when: juju_check.rc != 0
+
+    - name: Get list of existing models
+      command: "/snap/bin/juju models --format=json"
+      register: models_json
+      changed_when: false
+
+    - name: Parse models
+      set_fact:
+        existing_models: "{{ (models_json.stdout | from_json).models | map(attribute='name') | list }}"
+
+    - name: Create model if it doesn't exist
+      command: "/snap/bin/juju add-model {{ model_name }}"
+      when: "model_name not in existing_models"
+      changed_when: true
+
+    - name: Verify model was created
+      command: "/snap/bin/juju models --format=json"
+      register: models_verify
+      changed_when: false
+
+    - name: Confirm model exists
+      assert:
+        that:
+          - "model_name in ((models_verify.stdout | from_json).models | map(attribute='name') | list)"
+        fail_msg: "Model {{ model_name }} was not created"
+        success_msg: "Model {{ model_name }} created successfully"

@@ -1,0 +1,92 @@
+---
+- name: Combined Juju Bootstrap and Deploy
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  gather_facts: no
+
+  vars:
+    overlay_path: "/home/serpro/landscape_overlay.yaml"
+    cert_path: "/tmp/landscape_cert.pem"
+    key_path: "/tmp/landscape_key.pem"
+    cert_cn: "{{ domain_name | default('landscape.test.local') }}"
+
+  tasks:
+    # Tasks from 01-bootstrap-and-add-machines.yml
+    - name: Check for existing juju controllers
+      ansible.builtin.command: "/snap/bin/juju controllers"
+      register: juju_controllers_result
+      changed_when: false
+      become: no
+      failed_when: "juju_controllers_result.rc != 0 and 'No controllers registered' not in juju_controllers_result.stderr"
+
+    - name: Bootstrap Juju controller
+      ansible.builtin.command: "/snap/bin/juju bootstrap localhost {{ controller_name }} --config 'security.privileged=true'"
+      register: bootstrap_result
+      changed_when: "'already exists' not in bootstrap_result.stderr"
+      failed_when:
+        - bootstrap_result.rc != 0
+        - "'already exists' not in bootstrap_result.stderr"
+      become: no
+
+    - name: Check if model already exists
+      ansible.builtin.command: "/snap/bin/juju models"
+      register: juju_models_result
+      changed_when: false
+      become: no
+
+    - name: Add Juju model
+      ansible.builtin.command: "/snap/bin/juju add-model {{ model_name }}"
+      when: "model_name not in juju_models_result.stdout"
+      changed_when: true
+      become: no
+
+    - name: Get list of current machines in the model
+      ansible.builtin.command: "/snap/bin/juju machines -m {{ model_name }} --format=json"
+      register: juju_machines_json
+      changed_when: false
+      become: no
+      ignore_errors: true
+
+    - name: Add machines to the Juju model
+      ansible.builtin.command: "/snap/bin/juju add-machine -m {{ model_name }} ssh:{{ hostvars[item]['ansible_user'] | default('ubuntu') }}@{{ hostvars[item]['ansible_host'] }}"
+      loop: "{{ groups['lxd_hosts'] }}"
+      loop_control:
+        loop_var: item
+      changed_when: true
+      become: no
+      ignore_errors: true
+
+    # Tasks from 03-deploy-test.yml
+    - name: Generate a self-signed certificate and private key
+      ansible.builtin.command:
+        cmd: >
+          openssl req -new -x509 -nodes -days 365
+          -subj "/CN={{ cert_cn }}"
+          -out "{{ cert_path }}"
+          -keyout "{{ key_path }}"
+      args:
+        creates: "{{ cert_path }}"
+
+    - name: Read and b64encode certificate
+      ansible.builtin.set_fact:
+        cert_content_b64: "{{ (lookup('file', cert_path) + '\n') | b64encode }}"
+
+    - name: Read and b64encode private key
+      ansible.builtin.set_fact:
+        key_content_b64: "{{ lookup('file', key_path) | b64encode }}"
+
+    - name: Create Juju overlay file for SSL
+      ansible.builtin.copy:
+        dest: "{{ overlay_path }}"
+        content: |
+          applications:
+            haproxy:
+              options:
+                ssl_cert: {{ cert_content_b64 }}
+                ssl_key: {{ key_content_b64 }}
+
+    - name: Deploy Landscape for Test Environment using Bundle and Overlay
+      ansible.builtin.command:
+        cmd: "/snap/bin/juju deploy -m {{ model_name }} landscape-scalable --channel=stable --overlay {{ overlay_path }}"
+      changed_when: true
+      environment:
+        JUJU_DATA: "/home/serpro/.local/share/juju"

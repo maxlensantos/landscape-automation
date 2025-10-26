@@ -1,0 +1,38 @@
+---
+- name: Deploy Landscape Scalable Bundle
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  gather_facts: no
+  become: no
+
+  tasks:
+    - name: Get current model status
+      command: "/snap/bin/juju status --format=json -m {{ model_name }}"
+      register: status_json
+      changed_when: false
+      ignore_errors: true
+
+    - name: Parse status to check if applications exist
+      set_fact:
+        bundle_deployed: "{{ (status_json.stdout | from_json).applications | length > 0 if status_json.rc == 0 else false }}"
+
+    - name: Deploy landscape-scalable bundle
+      command: "/snap/bin/juju deploy landscape-scalable --channel=stable -m {{ model_name }}"
+      when: "not bundle_deployed"
+      changed_when: true
+
+    - name: Wait for bundle deployment to complete
+      command: "/snap/bin/juju wait-for model -m {{ model_name }} --timeout=30m"
+      changed_when: false
+      register: wait_result
+
+    - name: Verify bundle deployed successfully
+      command: "/snap/bin/juju status --format=json -m {{ model_name }}"
+      register: final_status
+      changed_when: false
+
+    - name: Check that at least one unit per application exists
+      assert:
+        that:
+          - "(final_status.stdout | from_json).applications | length > 0"
+        fail_msg: "Bundle deployment failed - no applications found"
+        success_msg: "Bundle deployed successfully"
