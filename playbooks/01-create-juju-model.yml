@@ -12,27 +12,30 @@
       failed_when: juju_check.rc != 0
 
     - name: Get list of existing models
-      command: "/snap/bin/juju models --format=json"
+      command: "/snap/bin/juju models -c {{ controller_name }} --format=json"
       register: models_json
       changed_when: false
+      ignore_errors: true
 
-    - name: Parse models
+    - name: Initialize models list
       set_fact:
-        existing_models: "{{ (models_json.stdout | from_json).models | map(attribute='name') | list }}"
+        existing_models: []
+
+    - name: Parse existing models if command returned output
+      set_fact:
+        existing_models: "{{ (models_json.stdout | from_json).models | map(attribute='short-name') | list }}"
+      when: models_json.stdout is defined and models_json.stdout | length > 0 and models_json.rc == 0
 
     - name: Create model if it doesn't exist
-      command: "/snap/bin/juju add-model {{ model_name }}"
+      command: "/snap/bin/juju add-model {{ model_name }} -c {{ controller_name }}"
       when: "model_name not in existing_models"
       changed_when: true
 
-    - name: Verify model was created
-      command: "/snap/bin/juju models --format=json"
+    - name: Wait for model to appear in controller
+      command: "/snap/bin/juju models -c {{ controller_name }} --format=json"
       register: models_verify
+      until: "model_name in ((models_verify.stdout | from_json).models | map(attribute='short-name') | list)"
+      retries: 6
+      delay: 10 # seconds
       changed_when: false
-
-    - name: Confirm model exists
-      assert:
-        that:
-          - "model_name in ((models_verify.stdout | from_json).models | map(attribute='name') | list)"
-        fail_msg: "Model {{ model_name }} was not created"
-        success_msg: "Model {{ model_name }} created successfully"
+      when: "model_name not in existing_models"

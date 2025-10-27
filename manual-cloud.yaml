@@ -1,0 +1,4 @@
+clouds:
+  on-premise-manual:
+    type: manual
+    endpoint: serpro@10.35.0.9

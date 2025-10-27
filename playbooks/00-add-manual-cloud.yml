@@ -1,0 +1,27 @@
+---
+- name: Add or Update Manual Juju Cloud
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  gather_facts: no
+  become: no
+
+  tasks:
+    - name: Check if manual cloud already exists
+      command: "/snap/bin/juju clouds --format=json"
+      register: juju_clouds
+      changed_when: false
+      ignore_errors: true
+
+    - name: Copy manual cloud definition to remote host
+      copy:
+        src: ../manual-cloud.yaml
+        dest: /home/serpro/manual-cloud.yaml
+
+    - name: Add on-premise-manual cloud if it does not exist
+      command: "/snap/bin/juju add-cloud on-premise-manual /home/serpro/manual-cloud.yaml"
+      when: "'on-premise-manual' not in juju_clouds.stdout"
+      changed_when: true
+
+    - name: Update on-premise-manual cloud if it already exists
+      command: "/snap/bin/juju update-cloud on-premise-manual --client -f /home/serpro/manual-cloud.yaml"
+      when: "'on-premise-manual' in juju_clouds.stdout"
+      changed_when: true

@@ -1,0 +1,23 @@
+---
+- name: Scale Out Applications for HA
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  gather_facts: no
+  become: no
+  when: "is_ha_cluster | default(false)"
+
+  tasks:
+    - name: Add second unit for postgresql to machine 1
+      command: "/snap/bin/juju add-unit -m {{ controller_name }}:{{ model_name }} postgresql --to lxd:1"
+      changed_when: true
+
+    - name: Add second unit for rabbitmq-server to machine 1
+      command: "/snap/bin/juju add-unit -m {{ controller_name }}:{{ model_name }} rabbitmq-server --to lxd:1"
+      changed_when: true
+
+    - name: Add second unit for landscape-server to machine 1
+      command: "/snap/bin/juju add-unit -m {{ controller_name }}:{{ model_name }} landscape-server --to lxd:1"
+      changed_when: true
+
+    - name: Add second unit for haproxy to machine 1
+      command: "/snap/bin/juju add-unit -m {{ controller_name }}:{{ model_name }} haproxy --to lxd:1"
+      changed_when: true

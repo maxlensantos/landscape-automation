@@ -1,7 +1,6 @@
 ---
 - name: Deploy Canonical Landscape (Test Environment)
-  hosts: controller
-  connection: local
+  hosts: "{{ groups['lxd_hosts'][0] }}"
   become: no
   gather_facts: no
 

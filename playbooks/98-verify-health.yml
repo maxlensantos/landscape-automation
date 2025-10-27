@@ -11,25 +11,27 @@
     - name: "Display waiting message"
       ansible.builtin.debug:
         msg: "Aguardando o modelo Juju estabilizar. Isso pode levar vários minutos..."
+      when: not ansible_check_mode
 
     - name: Wait for model to become active and idle
-      ansible.builtin.command: "juju wait-for model -m {{ model_name }} --timeout={{ health_check_timeout }}"
+      ansible.builtin.command: "juju wait-for model {{ model_name }} --timeout={{ health_check_timeout }}"
       register: health_check_result
       changed_when: false
       ignore_errors: true
+      when: not ansible_check_mode
 
     - name: Set final health status fact
       ansible.builtin.set_fact:
-        all_apps_active: "{{ health_check_result.rc == 0 }}"
+        all_apps_active: "{{ health_check_result.rc == 0 if 'rc' in health_check_result else false }}"
 
     - name: Get final Juju status for IP address
       ansible.builtin.command: "juju status --format=json"
       register: final_juju_status
       changed_when: false
-      when: all_apps_active
+      when: all_apps_active and not ansible_check_mode
 
     - name: Display SUCCESS and Next Steps
-      when: all_apps_active
+      when: all_apps_active and not ansible_check_mode
       block:
         - name: Set HAProxy IP Address
           ansible.builtin.set_fact:
@@ -56,21 +58,21 @@
 
               ######################################################################
 
-    - name: Display TIMEOUT Message
-      when: not all_apps_active
-      ansible.builtin.debug:
-        msg: |
-          ######################################################################
-          #         O CLUSTER NÃO ATINGIU UM ESTADO SAUDÁVEL.                  #
-          ######################################################################
+        - name: Display TIMEOUT Message
+          when: not all_apps_active and not ansible_check_mode
+          ansible.builtin.debug:
+            msg: |
+              ######################################################################
+              #         O CLUSTER NÃO ATINGIU UM ESTADO SAUDÁVEL.                  #
+              ######################################################################
 
-          O tempo de espera de {{ health_check_timeout }} foi atingido e o cluster não
-          estabilizou (nem todas as aplicações estão no estado 'active/idle').
+              O tempo de espera de {{ health_check_timeout }} foi atingido e o cluster não
+              estabilizou (nem todas as aplicações estão no estado 'active/idle').
 
-          Ações recomendadas:
-          1. Use a opção "4) Exibir Status do Ambiente" no menu para ver o
-             estado detalhado das aplicações e identificar qual delas está
-             com problema.
+              Ações recomendadas:
+              1. Use a opção "4) Exibir Status do Ambiente" no menu para ver o
+                 estado detalhado das aplicações e identificar qual delas está
+                 com problema.
 
-          2. Investigue os logs da(s) unidade(s) com problema para um
-             diagnóstico mais profundo.
+              2. Investigue os logs da(s) unidade(s) com problema para um
+                 diagnóstico mais profundo.

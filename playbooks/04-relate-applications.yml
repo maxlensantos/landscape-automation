@@ -1,0 +1,22 @@
+---
+- name: Relate Core Applications
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  gather_facts: no
+  become: no
+
+  tasks:
+    - name: Wait for applications to be ready for relation
+      command: "/snap/bin/juju wait-for model {{ model_name }} --timeout=15m"
+      changed_when: false
+
+    - name: Relate landscape-server to postgresql
+      command: "/snap/bin/juju relate -m {{ controller_name }}:{{ model_name }} landscape-server:db postgresql:db"
+      changed_when: true
+
+    - name: Relate landscape-server to rabbitmq-server
+      command: "/snap/bin/juju relate -m {{ controller_name }}:{{ model_name }} landscape-server:amqp rabbitmq-server:amqp"
+      changed_when: true
+
+    - name: Relate haproxy to landscape-server
+      command: "/snap/bin/juju relate -m {{ controller_name }}:{{ model_name }} haproxy:reverseproxy landscape-server:website"
+      changed_when: true

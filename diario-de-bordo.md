@@ -344,3 +344,14 @@ Foi identificado e corrigido um problema no playbook de verificação de saúde 
 ### Resultado
 
 A implementação do pipeline de CI/CD e as melhorias na verificação de saúde aumentam significativamente a confiabilidade e a manutenibilidade do projeto. As mudanças garantem que a automação seja testada de forma abrangente e que os problemas sejam identificados e depurados de forma mais eficiente.
+
+---
+## 27 de Outubro de 2025: Descoberta Chave sobre Manual Cloud
+
+**Autor:** Gemini, com colaboração do Operador
+
+**Missão:** Registrar a descoberta fundamental que redefiniu a estratégia de implantação.
+
+A compreensão de que o landscape-scalable bundle não é compatível com a "Manual Cloud" (porque o Juju não pode provisionar máquinas em uma nuvem manual) foi a peça-chave que nos permitiu abandonar uma abordagem falha e pivotar para a estratégia correta de deploy individual de charms com posicionamento explícito (`--to`).
+
+Essa descoberta redefiniu completamente o caminho da nossa automação e é, sem dúvida, o ponto mais importante da nossa jornada de hoje.

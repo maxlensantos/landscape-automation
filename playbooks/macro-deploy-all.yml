@@ -1,18 +1,32 @@
 ---
-# Playbook Master: Deploy Completo do Landscape
-# Segue 100% a documentação oficial Canonical
+# Playbook Master: Deploy Completo do Landscape (Manual Cloud Strategy)
 
-- name: "Step 1: Prepare Infrastructure"
+- name: "Step 1: Prepare Infrastructure Nodes"
   import_playbook: 00-prepare-host-nodes.yml
 
-- name: "Step 2: Create Juju Model"
+- name: "Step 2: Add Manual Juju Cloud"
+  import_playbook: 00-add-manual-cloud.yml
+
+- name: "Step 3: Bootstrap Juju Controller on Node 0"
+  import_playbook: 00-bootstrap-controller.yml
+
+- name: "Step 4: Create Juju Model"
   import_playbook: 01-create-juju-model.yml
 
-- name: "Step 3: Deploy Landscape Bundle"
-  import_playbook: 02-deploy-landscape-bundle.yml
+- name: "Step 5: Add Node 1 to Juju Model for HA"
+  import_playbook: 02-add-ha-node.yml
 
-- name: "Step 4: Scale for HA (if enabled)"
-  import_playbook: 03-scale-for-ha.yml
+- name: "Step 6: Pre-provision LXC Machines on all Nodes"
+  import_playbook: 02-add-lxc-machines.yml
 
-- name: "Step 5: Verify Health"
+- name: "Step 7: Deploy Landscape Bundle to LXC Machines"
+  import_playbook: 03-deploy-bundle.yml
+
+- name: "Step 8: Relate Core Applications"
+  import_playbook: 04-relate-applications.yml
+
+- name: "Step 9: Scale Out Applications to Node 2 for HA"
+  import_playbook: 05-scale-out-ha.yml
+
+- name: "Step 10: Verify Final Health"
   import_playbook: 98-verify-health.yml

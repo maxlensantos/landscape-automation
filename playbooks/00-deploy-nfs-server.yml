@@ -1,7 +1,6 @@
 ---
 - name: Deploy and Configure NFS Server via Juju
-  hosts: controller
-  connection: local
+  hosts: "{{ groups['lxd_hosts'][0] }}"
   gather_facts: no
   become: no
 

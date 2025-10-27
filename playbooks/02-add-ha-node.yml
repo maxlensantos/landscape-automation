@@ -1,0 +1,38 @@
+---
+- name: Add HA node to Juju model idempotently
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  gather_facts: no
+  become: no
+  when: "groups['lxd_hosts'] | length > 1"
+
+  vars:
+    ha_node_hostname: "{{ hostvars[groups['lxd_hosts'][1]]['inventory_hostname'] }}"
+    ha_node_ip: "{{ hostvars[groups['lxd_hosts'][1]]['ansible_host'] }}"
+    ha_node_user: "{{ hostvars[groups['lxd_hosts'][1]]['ansible_user'] }}"
+
+  tasks:
+    - name: Get list of existing Juju machines
+      command: "/snap/bin/juju machines -m {{ controller_name }}:{{ model_name }} --format=json"
+      register: juju_machines_output
+      changed_when: false
+      ignore_errors: true
+
+    - name: Set fact to check if HA node exists
+      set_fact:
+        ha_node_exists: >-
+          {{ 
+            juju_machines_output.stdout is defined and
+            juju_machines_output.stdout | length > 0 and
+            juju_machines_output.rc == 0 and
+            (
+              ha_node_hostname in
+              (juju_machines_output.stdout | from_json).machines.values()
+              | map(attribute='hostname')
+              | list
+            )
+          }}
+
+    - name: Add machine for HA node
+      command: "/snap/bin/juju add-machine -m {{ controller_name }}:{{ model_name }} ssh:{{ ha_node_user }}@{{ ha_node_ip }}"
+      when: not ha_node_exists and (groups['lxd_hosts'] | length > 1)
+      changed_when: true

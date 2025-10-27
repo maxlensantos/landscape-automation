@@ -1,115 +1,97 @@
-# Arquitetura e Premissas do Projeto "landscape-automation"
+# Evolução da Estratégia de Implantação do Landscape HA (26 de Outubro de 2025)
 
-<!--
-NOTA PARA ASSISTENTES DE IA:
-Este documento é a fonte da verdade sobre a arquitetura e as decisões de design deste projeto.
-Leia e compreenda este arquivo antes de propor ou realizar qualquer alteração no código.
--->
+Este documento detalha a evolução da estratégia de implantação de um cluster Landscape em Alta Disponibilidade (HA) em dois nós on-premise, utilizando a abordagem de "Manual Cloud" do Juju.
 
-## 1. Visão Geral e Objetivo
+## Jornada de Depuração e Descobertas Significativas
 
-O objetivo deste projeto é automatizar a implantação do Canonical Landscape, oferecendo um método seguro e repetível para criar ambientes de teste (nó único) e de produção (multi-nó, HA).
+A jornada de hoje revelou a complexidade da orquestração Juju/Ansible em ambientes on-premise e a importância de alinhar a automação com as capacidades e idiossincrasias do Juju.
 
-## 2. Arquitetura Principal: O Modelo Híbrido
+### 1. Incompatibilidade do Modo `ansible-playbook --check`
+*   **Problema:** Playbooks falhavam em modo `--check` devido a variáveis Juju não populadas (ex: `models_json.stdout` vazio).
+*   **Solução:** Implementação de lógica robusta com `default('{}')` e condições `when` para lidar com variáveis indefinidas em dry-runs.
 
-A premissa fundamental deste projeto é a utilização de um **modelo híbrido**, combinando Ansible e Juju para tirar proveito da força de cada ferramenta.
+### 2. Problemas de Ambiente Ansible (`community.general` Collection)
+*   **Problema:** Módulo `community.general.juju_model` não encontrado, apesar de `ansible-galaxy` indicar instalação.
+*   **Diagnóstico:** Múltiplas versões da coleção instaladas em diferentes caminhos, e `ansible-playbook` não encontrando a versão correta.
+*   **Solução:** Criação de `ansible.cfg` no projeto com `collections_path = /home/serpro/.ansible/collections` (após correção de erro de digitação `collections_paths` -> `collections_path`).
 
-- **Ansible (O Orquestrador):** É responsável pela camada de infraestrutura e preparação do ambiente. Suas tarefas incluem:
-  - Instalar pacotes e dependências (LXD, Juju client).
-  - Configurar o ambiente base (redes, usuários, túneis VXLAN).
-  - Orquestrar o fluxo de execução através de playbooks sequenciais.
-  - Gerenciar tarefas externas ao ciclo de vida da aplicação (ex: certificados, redirecionamento de portas).
+### 3. Falha Fundamental: Ausência de Bootstrap do Juju Controller
+*   **Problema:** O playbook mestre não incluía a etapa `juju bootstrap`, levando a erros de "no controller registered".
+*   **Solução:** Criação do playbook `00-bootstrap-controller.yml` e sua inclusão na sequência correta do `macro-deploy-all.yml`.
 
-- **Juju (O Modelador de Aplicação e Serviços):** É responsável pelo ciclo de vida da aplicação Landscape e de seus serviços de suporte.
-  - **Por quê?** O Landscape é uma aplicação complexa e com estado. Juju é a ferramenta da Canonical desenhada para modelar e gerenciar essas relações de forma robusta.
-  - Nesta arquitetura, o Juju gerencia não apenas a pilha do Landscape (servidor, banco de dados, etc.), mas também serviços de infraestrutura essenciais para o cluster, como o **servidor NFS** para o espelho de pacotes APT. Isso centraliza o gerenciamento de estado no Juju.
-  - A topologia da aplicação é definida e implantada usando o **bundle oficial `landscape-scalable`**, com serviços adicionais (como o NFS) sendo orquestrados e relacionados via playbooks Ansible.
+### 4. Inconsistências na Sintaxe da CLI do Juju 3.6
+*   **Problema:** Flags como `-c` e `-m` eram inconsistentes entre subcomandos Juju (`models` vs. `status`/`deploy` vs. `wait-for`).
+*   **Solução:** Consulta à documentação oficial e correção da sintaxe para:
+    *   `juju status -m controller:model`
+    *   `juju deploy -m controller:model`
+    *   `juju wait-for model <model_name>` (argumento posicional)
 
-## 2.1. Visão de Infraestrutura e Topologia de Rede (vSphere)
+### 5. Problemas de Caminho de Arquivo em Comandos Remotos (Snap Confinement)
+*   **Problema:** `juju add-cloud` falhava com "no such file or directory" ao referenciar `manual-cloud.yaml`.
+*   **Diagnóstico:** Confinamento do Snap do Juju impedia acesso a `/tmp`. O arquivo precisava estar no diretório home do usuário.
+*   **Solução:** Copiar `manual-cloud.yaml` para `/home/serpro/manual-cloud.yaml` no nó remoto.
 
-Esta seção detalha a arquitetura de rede projetada para um ambiente VMware vSphere, garantindo alta disponibilidade e performance.
+### 6. Idempotência da `juju add-cloud`
+*   **Problema:** `juju add-cloud` falhava com "cloud already exists".
+*   **Solução:** Implementação de lógica "criar ou atualizar" usando `juju add-cloud` e `juju update-cloud --client -f <arquivo>`.
 
-### Princípio Fundamental: vNIC Única
+### 7. Erro de Bootstrap em "Manual Cloud": `region not valid`
+*   **Problema:** `juju bootstrap on-premise-manual/user@host` falhava com "region not valid".
+*   **Solução:** A especificação do host para uma nuvem manual deve ser feita no arquivo `manual-cloud.yaml` via `endpoint: user@host`. O comando `bootstrap` é então simplificado para `juju bootstrap <cloud_name> <controller_name>`.
 
-- **Interface Única:** Cada VM (`lansrv01`, `lansrv02`) possui apenas **uma única interface de rede virtual (vNIC)**.
-- **Consolidação de Tráfego:** Esta vNIC é conectada à **"Rede Microsegmentação BSA"** e é responsável por transportar todo o tráfego, incluindo:
-  1.  **Tráfego de Gerenciamento:** Conexão do Ansible, comunicação do controlador Juju com seus agentes.
-  2.  **Tráfego da Aplicação:** Acesso dos usuários finais ao HAProxy.
-  3.  **Tráfego de Underlay:** Os pacotes UDP encapsulados da rede overlay VXLAN viajam entre as VMs através desta rede.
+### 8. Falha do Contêiner do Controlador Juju (`broken pipe`)
+*   **Problema:** O contêiner do controlador Juju falhava logo após o bootstrap, com erro de "broken pipe", indicando falta de recursos.
+*   **Solução:** Adição de `--constraints "mem=4G"` ao comando `juju bootstrap`.
 
-### Topologia de Rede Lógica
+### 9. Problemas de Timing e Idempotência do LXD
+*   **Problema:** `lxd init` falhava com "connection refused" mesmo após `wait_for`.
+*   **Solução:** Implementação de inicialização robusta do LXD: `snap remove --purge lxd`, `snap install lxd --channel=5.0/stable`, `wait_for` socket, `lxd init --auto --storage-backend dir`.
 
-Existem duas redes lógicas principais operando em conjunto:
+### 10. Idempotência da `juju add-machine`
+*   **Problema:** `juju add-machine` falhava com "machine is already provisioned".
+*   **Solução:** Implementação de lógica de idempotência robusta para `add-machine`, verificando `hostname` na saída de `juju machines --format=json`.
 
-#### 1. Rede Microsegmentação BSA (Underlay Físico/Virtual)
-- Esta é a rede à qual as vNICs das VMs estão conectadas.
-- **Requisito:** Deve haver conectividade IP completa (Camada 3) entre todas as VMs nesta rede.
-- **Consideração:** A vNIC única precisa ter largura de banda adequada para suportar a soma de todos os tipos de tráfego.
+### 11. Erro de Sintaxe em Playbooks (`when` no nível do Play)
+*   **Problema:** Condição `when` aplicada no nível do Play, em vez de no nível da Task, causando erro de sintaxe YAML.
+*   **Solução:** Mover a condição `when` para cada Task individualmente.
 
-#### 2. LXD Overlay Network (Overlay Lógico)
-- **Tecnologia:** Esta rede é criada e gerenciada pelo LXD/Juju usando **VXLAN**.
-- **Função:** Conecta de forma transparente todos os contêineres LXD (`landscape-server`, `rabbitmq-server`, `haproxy`, `nfs-server`), independentemente de em qual VM (`lansrv01` ou `lansrv02`) eles estejam rodando.
-- **Funcionamento:** O tráfego dos contêineres é encapsulado em pacotes UDP pelo VXLAN. O switch virtual do VMware vê apenas pacotes UDP sendo trocados entre os IPs das VMs, não o tráfego interno dos contêineres.
+### 12. Erro de Deploy de Bundle (`cannot use -n when specifying a placement directive`)
+*   **Problema:** `juju deploy landscape-scalable` falhava ao tentar usar `--to lxd:0 -n 3` (ou similar) com o bundle.
+*   **Diagnóstico:** Bundles não permitem a especificação de `num_units` (`-n`) junto com diretivas de posicionamento (`--to`). O Juju tenta provisionar máquinas automaticamente, o que falha em uma nuvem manual.
+*   **Estratégia Corrigida:** Abandonar o deploy do bundle `landscape-scalable` e implantar cada charm individualmente, especificando o posicionamento (`--to lxd:0`, `--to lxd:1`) e as relações. Esta é a estratégia atual que o projeto está sendo refatorado para seguir.
 
-### Requisitos do VMware vSphere
+---
 
-Para que esta arquitetura funcione corretamente, a infraestrutura vSphere deve garantir o seguinte:
+## Estratégia de Implantação Atual: Manual Cloud com Deploy Individual de Charms
 
-- **Regra de Anti-Afinidade (DRS):** Uma regra **obrigatória** deve ser criada para garantir que as VMs `lansrv01` e `lansrv02` sempre residam em hosts ESXi físicos distintos. Isso garante a alta disponibilidade em caso de falha de um host físico.
-- **Virtualização de Hardware:** As extensões de virtualização de hardware (Intel VT-x / AMD-V) devem ser expostas para as VMs para permitir a execução dos contêineres LXD.
-- **Ponto Crítico de Rede:** Devido ao uso de uma rede overlay VXLAN, **NÃO é necessário habilitar "Modo Promíscuo" ou aceitar "Transmissões Falsificadas" (Forged Transmits)** no Port Group do vSwitch. O encapsulamento do VXLAN torna essas configurações desnecessárias.
+A estratégia atual para o cluster Landscape HA em 2 nós on-premise é baseada na "Manual Cloud" do Juju, com a implantação individual de cada charm e controle explícito sobre o posicionamento das unidades em máquinas LXC pré-provisionadas.
 
-### Fluxos de Comunicação
+### Arquitetura
 
-- **Juju:** O controlador Juju (no SO base do `lansrv01`) se comunica com os agentes Juju (no SO base de ambas as VMs) através da "Rede Microsegmentação BSA".
-- **Aplicação:** Os serviços dentro dos contêineres (ex: `landscape-server` falando com `postgresql`) se comunicam diretamente através da "LXD Overlay Network" (`172.16.0.0/24`), de forma transparente e segura.
+*   **Nós Físicos:** Duas VMs (`ha-node-01` e `ha-node-02`) atuam como hosts para contêineres LXD.
+*   **Juju Controller:** Co-localizado em `ha-node-01`.
+*   **Cloud:** `on-premise-manual` (tipo `manual`), com `endpoint` definido para `ha-node-01`.
+*   **Máquinas Juju:**
+    *   `machine 0`: Corresponde a `ha-node-01`.
+    *   `machine 1`: Corresponde a `ha-node-02` (adicionada via `juju add-machine ssh:...`).
+    *   `machine 2` a `machine 7`: Contêineres LXC pré-provisionados (3 em `machine 0`, 3 em `machine 1`) para hospedar as unidades das aplicações.
+*   **Deploy:** Cada charm (`postgresql`, `rabbitmq-server`, `landscape-server`, `haproxy`) é implantado individualmente, com suas unidades distribuídas entre as máquinas LXC (`--to lxd:X`).
 
-## 3. Gerenciamento de Ambientes (Teste vs. Produção)
+### Resiliência e Alta Disponibilidade
 
-A automação foi desenhada para ser flexível e suportar múltiplos ambientes de forma limpa.
+*   **HA de Aplicação:** Múltiplas unidades de cada serviço são implantadas e distribuídas entre os dois nós físicos, garantindo que a falha de um contêiner ou de um nó físico não derrube o serviço.
+*   **HA de Dados:** Charms como `postgresql` e `rabbitmq-server` formam clusters internos para replicação de dados.
+*   **Mitigação de PoF de Infraestrutura:** A falha de um nó físico é mitigada pela distribuição das unidades e pela capacidade de recuperação do Juju, além de soluções de HA da plataforma de virtualização (VMware HA).
 
-- **Fonte da Verdade:** Os arquivos de inventário em `inventory/` (`testing.ini`, `production.ini`). Eles definem as variáveis do ambiente e os hosts que comporão o cluster.
-- **Grupo de Hosts:** Os nós que formarão o cluster Juju/LXD devem ser listados no grupo `[lxd_hosts]` do inventário.
-- **Mecanismo de Controle:** A variável `is_ha_cluster: <true|false>` no inventário continua sendo a chave que direciona a lógica condicional.
-- **Topologia Declarativa:** A diferença entre os ambientes é gerenciada pelo `overlay-ha.yaml`, que modifica o `bundle-base.yaml` apenas com as diferenças para produção. Esta é uma premissa de design importante para evitar duplicação de código.
+### Próximos Passos na Automação
 
-## 4. Estrutura e Convenções do Projeto
-
-- `setup.sh`: É o **ponto de entrada único e seguro** para os operadores. A premissa é que os playbooks nunca devem ser executados manualmente.
-- `playbooks/`: Organizados em uma sequência numérica que representa a ordem lógica de execução.
-  - `00-prepare-host-nodes.yml`: Prepara as VMs que servirão como nós do cluster (instala LXD, Juju, configura redes, etc.).
-  - `02-bootstrap-juju.yml`: Inicia o controlador Juju e adiciona os nós preparados como máquinas Juju.
-  - `03-deploy-application.yml`: Implanta o bundle do Landscape.
-  - `00-deploy-nfs-server.yml`: Implanta e configura o charm do NFS para o espelho APT.
-  - Playbooks subsequentes (`98-verify-health.yml`, etc.) cuidam da verificação e exposição do serviço.
-- `vars/`: `main.yml` para variáveis comuns e `secrets.yml` para dados sensíveis, sempre criptografado com `ansible-vault`.
-- **Idempotência:** Todas as tarefas devem ser, sempre que possível, idempotentes. Elas devem poder ser executadas múltiplas vezes sem causar efeitos colaterais indesejados.
-- **Acesso em Ambientes Virtualizados (Multipass):** Para ambientes de desenvolvimento em VMs, a automação deve garantir o redirecionamento de portas (ex: 80, 443) da VM para o contêiner do proxy reverso (HAProxy) para permitir o acesso externo à interface. Esta lógica deve ser parte do fluxo de implantação padrão.
-
-## 5. Como Manter e Evoluir o Projeto
-
-Para garantir a consistência e a qualidade, qualquer desenvolvedor (humano ou IA) deve seguir estas premissas:
-
-1.  **Leia este documento (`ARCHITECTURE.md`) primeiro.**
-2.  **Valide as mudanças:** Sempre execute a macro `RECONSTRUIR Ambiente de Teste Completo` para garantir que sua mudança não quebrou o ciclo de vida completo da automação.
-3.  **Documente as mudanças:** Após a implementação, atualize o `diario-de-bordo.md` e, se necessário, o `README.md`.
-
-## 5.1. Premissas de Compatibilidade
-
-- **Versão do Charm vs. Base do SO:** A versão de um charm do Juju, definida pelo seu canal (ex: `14/stable`), está diretamente atrelada à versão da base do sistema operacional (ex: `ubuntu@22.04`) em que ele pode ser implantado.
-- **Exemplo Crítico:** O charm `postgresql` no canal `14/stable` é compatível apenas com a base Ubuntu 22.04. Para uma base `Ubuntu 24.04`, é **mandatório** usar um canal compatível, como o `16/stable`.
-- **Diretriz:** Antes de definir um canal de charm nos playbooks, sempre verifique a compatibilidade com a base do SO de destino na página do charm no Charmhub.
-
-## 6. Diretrizes para Assistentes de IA
-
-Qualquer assistente de IA que interaja com este codebase deve aderir estritamente às seguintes diretrizes para garantir consistência e qualidade:
-
-1.  **Fonte da Verdade:** Este documento (`ARCHITECTURE.md`) é sua fonte primária de informação. Leia-o antes de qualquer outra ação. As premissas aqui descritas não são negociáveis.
-
-2.  **Ponto de Entrada:** O script `setup.sh` é o único ponto de entrada para operadores. **Nunca** instrua o usuário a executar playbooks `ansible-playbook` diretamente. Suas modificações devem aprimorar o `setup.sh` ou os playbooks que ele chama, mantendo-o como a interface principal.
-
-3.  **Respeite o Modelo Híbrido:** Entenda a separação de responsabilidades entre Ansible (infraestrutura) e Juju (aplicação). Não tente gerenciar o ciclo de vida da aplicação com Ansible, nem a preparação da infraestrutura com Juju.
-
-4.  **Idempotência é Lei:** Todas as alterações em playbooks devem ser idempotentes. O sistema deve poder ser executado várias vezes, chegando sempre ao mesmo estado desejado.
-
-5.  **Validação Obrigatória:** Após qualquer modificação, descreva como você validaria a mudança. O método preferencial é através da macro `RECONSTRUIR Ambiente de Teste Completo` disponível no `setup.sh`.
+O projeto está sendo refatorado para:
+1.  Garantir a limpeza completa do ambiente antes de cada execução.
+2.  Configurar o LXD de forma robusta em ambos os nós.
+3.  Adicionar a nuvem manual e fazer o bootstrap do controlador.
+4.  Adicionar o segundo nó físico ao modelo Juju.
+5.  Pré-provisionar as máquinas contêiner LXC em ambos os nós físicos.
+6.  Implantar cada charm individualmente, com posicionamento explícito nas máquinas LXC.
+7.  Configurar as relações entre os charms.
+8.  Escalar as unidades para HA (adicionando unidades aos contêineres no segundo nó físico).
+9.  Verificar a saúde final do modelo.

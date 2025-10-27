@@ -1,0 +1,10 @@
+---
+- name: Deploy Landscape Bundle to existing machines
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  gather_facts: no
+  become: no
+
+  tasks:
+    - name: Deploy landscape-scalable bundle
+      command: "/snap/bin/juju deploy -m {{ controller_name }}:{{ model_name }} landscape-scalable --channel=stable"
+      changed_when: true

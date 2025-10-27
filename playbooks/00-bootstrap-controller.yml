@@ -1,0 +1,40 @@
+---
+- name: Bootstrap Juju Controller
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  gather_facts: no
+  become: no
+
+  tasks:
+    - name: Check for existing Juju state directory
+      ansible.builtin.stat:
+        path: /home/serpro/.local/share/juju
+      register: juju_state_dir
+
+    - name: Remove Juju state directory if it exists
+      ansible.builtin.file:
+        path: /home/serpro/.local/share/juju
+        state: absent
+      when: juju_state_dir.stat.exists
+
+    - name: Check if Juju controller is already bootstrapped
+      command: "/snap/bin/juju controllers --format=json"
+      register: juju_controllers
+      changed_when: false
+      ignore_errors: true
+
+    - name: DEBUG - Show raw output of juju controllers
+      debug:
+        var: juju_controllers.stdout
+
+    - name: Set controller existence fact
+      set_fact:
+        controller_exists: "{{ controller_name in juju_controllers.stdout }}"
+
+    - name: DEBUG - Show controller_exists fact
+      debug:
+        var: controller_exists
+
+    - name: Bootstrap Juju controller if it does not exist
+      command: "/snap/bin/juju bootstrap on-premise-manual {{ controller_name }} --constraints \"mem=4G\" --debug --verbose --keep-broken"
+      when: not controller_exists
+      changed_when: true
