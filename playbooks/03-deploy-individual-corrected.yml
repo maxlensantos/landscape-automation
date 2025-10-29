@@ -1,0 +1,487 @@
+---
+# playbooks/03-deploy-individual-corrected.yml
+#
+# Deploy Individual de Charms para Landscape HA (2 Nós)
+# 
+# ESTRATÉGIA:
+# - Deploy de CADA charm individualmente (NÃO usa bundle)
+# - Posicionamento explícito com --to lxd:X
+# - Aplicação de SSL ANTES de criar relações
+# - Escalabilidade para HA no segundo nó
+#
+# PRÉ-REQUISITOS:
+# - Machine-0 e Machine-1 já existem
+# - LXD machines pré-provisionadas (lxd:0 até lxd:5)
+# - SSL certificates gerados
+#
+# TEMPO: ~20-30 minutos
+
+- name: "Deploy Individual Charms for Landscape HA"
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  gather_facts: no
+  become: no
+
+  vars:
+    # Canais de cada charm (ajuste conforme necessário)
+    postgresql_channel: "{{ '16/stable' if ansible_distribution_version | default('22.04') == '24.04' else '14/stable' }}"
+    rabbitmq_channel: "3.9/stable"
+    haproxy_channel: "stable"
+    landscape_channel: "stable"
+    
+    # Certificados SSL (self-signed para test)
+    cert_path: "/tmp/landscape_cert.pem"
+    key_path: "/tmp/landscape_key.pem"
+    cert_cn: "landscape.local"
+    
+    # Timeouts
+    deploy_timeout: 600  # 10 minutos por charm
+    wait_timeout: 1800   # 30 minutos para stabilizar
+
+  tasks:
+
+    # ========================================================================
+    # FASE 0: PRÉ-VALIDAÇÃO
+    # ========================================================================
+
+    - name: "[PRE] Validate machine-0 and machine-1 exist"
+      ansible.builtin.command: "juju machines -m {{ model_name }} --format=json"
+      register: juju_machines
+      changed_when: false
+      failed_when: "'0' not in juju_machines.stdout"
+
+    - name: "[PRE] Parse machines status"
+      ansible.builtin.set_fact:
+        machines_list: "{{ (juju_machines.stdout | from_json).machines | dict2items | map(attribute='key') | list }}"
+
+    - name: "[PRE] Validate LXD machines are pre-provisioned"
+      ansible.builtin.assert:
+        that:
+          - "'0' in machines_list"
+          - "'1' in machines_list or (groups['lxd_hosts'] | length) == 1"
+        fail_msg: |
+          ERRO: Máquinas não pré-provisionadas!
+          Execute primeiro: playbooks/02-add-lxc-machines.yml
+          Máquinas encontradas: {{ machines_list }}
+        success_msg: "✓ Máquinas validadas"
+
+    - name: "[PRE] Check if any apps already deployed"
+      ansible.builtin.command: "juju status -m {{ model_name }} --format=json"
+      register: juju_status_check
+      changed_when: false
+      ignore_errors: true
+
+    - name: "[PRE] Parse existing applications"
+      ansible.builtin.set_fact:
+        existing_apps: "{{ (juju_status_check.stdout | from_json).applications | list if juju_status_check.rc == 0 else [] }}"
+      ignore_errors: true
+
+    - name: "[PRE] Display deployment plan"
+      ansible.builtin.debug:
+        msg: |
+          ┌────────────────────────────────────────────────────────┐
+          │       PLANO DE DEPLOY INDIVIDUAL - LANDSCAPE HA         │
+          ├────────────────────────────────────────────────────────┤
+          │ Máquinas: {{ machines_list | join(', ') }}
+          │ Aplicações existentes: {{ existing_apps | join(', ') if existing_apps else 'Nenhuma' }}
+          │ PostgreSQL channel: {{ postgresql_channel }}
+          │ Modelo: {{ model_name }}
+          ├────────────────────────────────────────────────────────┤
+          │ SEQUÊNCIA:
+          │ 1. PostgreSQL → lxd:0
+          │ 2. RabbitMQ → lxd:1
+          │ 3. Configurar SSL no HAProxy
+          │ 4. HAProxy → lxd:2
+          │ 5. Landscape Server → lxd:3
+          │ 6. Escalar para HA (se 2+ nós)
+          └────────────────────────────────────────────────────────┘
+
+    # ========================================================================
+    # FASE 1: GERAR CERTIFICADOS SSL (se não existirem)
+    # ========================================================================
+
+    - name: "[SSL] Check if SSL certificates already exist"
+      ansible.builtin.stat:
+        path: "{{ cert_path }}"
+      register: cert_stat
+
+    - name: "[SSL] Generate self-signed certificate"
+      when: not cert_stat.stat.exists
+      block:
+        - name: "Generate private key"
+          ansible.builtin.command:
+            cmd: >
+              openssl genpkey -algorithm RSA -out {{ key_path }}
+              -pkeyopt rsa_keygen_bits:2048
+          args:
+            creates: "{{ key_path }}"
+
+        - name: "Generate self-signed certificate"
+          ansible.builtin.command:
+            cmd: >
+              openssl req -new -x509 -key {{ key_path }}
+              -out {{ cert_path }} -days 365
+              -subj "/CN={{ cert_cn }}"
+          args:
+            creates: "{{ cert_path }}"
+
+        - name: "Display SSL certificate info"
+          ansible.builtin.command: "openssl x509 -in {{ cert_path }} -text -noout"
+          register: cert_info
+          changed_when: false
+
+        - name: "Certificate created successfully"
+          ansible.builtin.debug:
+            msg: "✓ Certificado auto-assinado gerado: {{ cert_path }}"
+
+    - name: "[SSL] Read and encode certificates to base64"
+      block:
+        - name: "Read certificate"
+          ansible.builtin.slurp:
+            src: "{{ cert_path }}"
+          register: cert_file
+
+        - name: "Read private key"
+          ansible.builtin.slurp:
+            src: "{{ key_path }}"
+          register: key_file
+
+        - name: "Set fact for certificate content"
+          ansible.builtin.set_fact:
+            cert_content_b64: "{{ cert_file.content }}"
+            key_content_b64: "{{ key_file.content }}"
+
+    # ========================================================================
+    # FASE 2: DEPLOY POSTGRESQL
+    # ========================================================================
+
+    - name: "[DEPLOY] Deploy PostgreSQL"
+      when: "'postgresql' not in existing_apps"
+      block:
+        - name: "Deploy PostgreSQL charm"
+          ansible.builtin.command: >-
+            juju deploy postgresql
+            --channel {{ postgresql_channel }}
+            --num-units 1
+            --to lxd:0
+            -m {{ model_name }}
+          register: deploy_postgresql
+          changed_when: true
+
+        - name: "Log PostgreSQL deployment"
+          ansible.builtin.debug:
+            msg: "✓ PostgreSQL deployment iniciado"
+
+        - name: "Wait for PostgreSQL to be ready (Phase 1)"
+          ansible.builtin.command: >-
+            juju status postgresql -m {{ model_name }}
+            --format=json
+          register: pg_status
+          until:
+            - "(pg_status.stdout | from_json)['applications']['postgresql']['application-status']['current'] in ['active', 'maintenance']"
+          retries: 30
+          delay: 10
+          changed_when: false
+
+    - name: "[DEPLOY] PostgreSQL deployment verification"
+      when: "'postgresql' not in existing_apps"
+      ansible.builtin.debug:
+        msg: "✓ PostgreSQL está em estado ativo/manutenção"
+
+    # ========================================================================
+    # FASE 3: DEPLOY RABBITMQ-SERVER
+    # ========================================================================
+
+    - name: "[DEPLOY] Deploy RabbitMQ-Server"
+      when: "'rabbitmq-server' not in existing_apps"
+      block:
+        - name: "Deploy RabbitMQ charm"
+          ansible.builtin.command: >-
+            juju deploy rabbitmq-server
+            --channel {{ rabbitmq_channel }}
+            --num-units 1
+            --to lxd:1
+            -m {{ model_name }}
+          register: deploy_rabbitmq
+          changed_when: true
+
+        - name: "Log RabbitMQ deployment"
+          ansible.builtin.debug:
+            msg: "✓ RabbitMQ deployment iniciado"
+
+        - name: "Wait for RabbitMQ to be ready (Phase 1)"
+          ansible.builtin.command: >-
+            juju status rabbitmq-server -m {{ model_name }}
+            --format=json
+          register: rmq_status
+          until:
+            - "(rmq_status.stdout | from_json)['applications']['rabbitmq-server']['application-status']['current'] in ['active', 'maintenance']"
+          retries: 30
+          delay: 10
+          changed_when: false
+
+    - name: "[DEPLOY] RabbitMQ deployment verification"
+      when: "'rabbitmq-server' not in existing_apps"
+      ansible.builtin.debug:
+        msg: "✓ RabbitMQ está em estado ativo/manutenção"
+
+    # ========================================================================
+    # FASE 4: DEPLOY HAPROXY (SEM SSL APLICADO AINDA)
+    # ========================================================================
+
+    - name: "[DEPLOY] Deploy HAProxy"
+      when: "'haproxy' not in existing_apps"
+      block:
+        - name: "Deploy HAProxy charm (sem SSL inicial)"
+          ansible.builtin.command: >-
+            juju deploy haproxy
+            --channel {{ haproxy_channel }}
+            --num-units 1
+            --to lxd:2
+            -m {{ model_name }}
+          register: deploy_haproxy
+          changed_when: true
+
+        - name: "Log HAProxy deployment"
+          ansible.builtin.debug:
+            msg: "✓ HAProxy deployment iniciado"
+
+        - name: "Wait for HAProxy to be ready (Phase 1)"
+          ansible.builtin.command: >-
+            juju status haproxy -m {{ model_name }}
+            --format=json
+          register: hap_status
+          until:
+            - "(hap_status.stdout | from_json)['applications']['haproxy']['application-status']['current'] in ['active', 'maintenance']"
+          retries: 30
+          delay: 10
+          changed_when: false
+
+    - name: "[DEPLOY] HAProxy deployment verification"
+      when: "'haproxy' not in existing_apps"
+      ansible.builtin.debug:
+        msg: "✓ HAProxy está em estado ativo/manutenção"
+
+    # ========================================================================
+    # FASE 5: APLICAR CONFIGURAÇÃO SSL NO HAPROXY
+    # ========================================================================
+
+    - name: "[CONFIG] Apply SSL configuration to HAProxy"
+      block:
+        - name: "Configure HAProxy SSL certificate"
+          ansible.builtin.command: >-
+            juju config haproxy
+            ssl_cert='{{ cert_content_b64 }}'
+            -m {{ model_name }}
+          register: config_cert
+          changed_when: true
+
+        - name: "Configure HAProxy SSL private key"
+          ansible.builtin.command: >-
+            juju config haproxy
+            ssl_key='{{ key_content_b64 }}'
+            -m {{ model_name }}
+          register: config_key
+          changed_when: true
+
+        - name: "Log SSL configuration"
+          ansible.builtin.debug:
+            msg:
+              - "✓ Certificado SSL aplicado ao HAProxy"
+              - "✓ Chave privada aplicada ao HAProxy"
+
+        - name: "Wait for HAProxy to process SSL config"
+          ansible.builtin.pause:
+            seconds: 10
+
+    # ========================================================================
+    # FASE 6: DEPLOY LANDSCAPE-SERVER
+    # ========================================================================
+
+    - name: "[DEPLOY] Deploy Landscape-Server"
+      when: "'landscape' not in existing_apps and 'landscape-server' not in existing_apps"
+      block:
+        - name: "Deploy Landscape-Server charm"
+          ansible.builtin.command: >-
+            juju deploy landscape-server
+            --channel {{ landscape_channel }}
+            --num-units 1
+            --to lxd:3
+            -m {{ model_name }}
+          register: deploy_landscape
+          changed_when: true
+
+        - name: "Log Landscape deployment"
+          ansible.builtin.debug:
+            msg: "✓ Landscape-Server deployment iniciado"
+
+        - name: "Wait for Landscape-Server to be ready (Phase 1)"
+          ansible.builtin.command: >-
+            juju status landscape-server -m {{ model_name }}
+            --format=json
+          register: ls_status
+          until:
+            - "(ls_status.stdout | from_json)['applications']['landscape-server']['application-status']['current'] in ['active', 'maintenance', 'waiting']"
+          retries: 30
+          delay: 10
+          changed_when: false
+          ignore_errors: true
+
+    - name: "[DEPLOY] Landscape-Server deployment verification"
+      when: "'landscape' not in existing_apps and 'landscape-server' not in existing_apps"
+      ansible.builtin.debug:
+        msg: "✓ Landscape-Server está em estado ativo/manutenção/esperando"
+
+    # ========================================================================
+    # FASE 7: AGUARDAR TODOS OS DEPLOYMENTS COMPLETAREM
+    # ========================================================================
+
+    - name: "[WAIT] Wait for all applications to stabilize"
+      ansible.builtin.command: "juju wait-for model {{ model_name }} --timeout=30m"
+      register: model_wait
+      changed_when: false
+      timeout: 1800
+      ignore_errors: true
+
+    - name: "[WAIT] Display wait result"
+      ansible.builtin.debug:
+        msg: "✓ Modelo aguardou por estabilização (rc: {{ model_wait.rc }})"
+
+    # ========================================================================
+    # FASE 8: CRIAR RELAÇÕES ENTRE APLICAÇÕES
+    # ========================================================================
+
+    - name: "[RELATE] Create relations between applications"
+      block:
+        - name: "Get current relations"
+          ansible.builtin.command: "juju status -m {{ model_name }} --format=json"
+          register: current_status
+          changed_when: false
+
+        - name: "Parse existing relations"
+          ansible.builtin.set_fact:
+            existing_relations: "{{ ((current_status.stdout | from_json).relations | map(attribute='endpoints') | map('map', attribute='application') | map('sort') | map('join', ':') | list) if (current_status.stdout | from_json).relations is defined else [] }}"
+
+        # Relação: Landscape ↔ PostgreSQL
+        - name: "Relate landscape-server to postgresql (db)"
+          ansible.builtin.command: >-
+            juju relate landscape-server:db postgresql:db-admin
+            -m {{ model_name }}
+          register: relate_db
+          changed_when: true
+          ignore_errors: true
+          when: "'landscape-server:postgresql' not in existing_relations and 'postgresql:landscape-server' not in existing_relations"
+
+        # Relação: Landscape ↔ RabbitMQ
+        - name: "Relate landscape-server to rabbitmq-server (amqp)"
+          ansible.builtin.command: >-
+            juju relate landscape-server:amqp rabbitmq-server:amqp
+            -m {{ model_name }}
+          register: relate_amqp
+          changed_when: true
+          ignore_errors: true
+          when: "'landscape-server:rabbitmq-server' not in existing_relations and 'rabbitmq-server:landscape-server' not in existing_relations"
+
+        # Relação: Landscape ↔ HAProxy
+        - name: "Relate landscape-server to haproxy (reverseproxy)"
+          ansible.builtin.command: >-
+            juju relate landscape-server:website haproxy:reverseproxy
+            -m {{ model_name }}
+          register: relate_proxy
+          changed_when: true
+          ignore_errors: true
+          when: "'landscape-server:haproxy' not in existing_relations and 'haproxy:landscape-server' not in existing_relations"
+
+        - name: "[RELATE] Relations created"
+          ansible.builtin.debug:
+            msg:
+              - "✓ Relação: landscape-server ↔ postgresql"
+              - "✓ Relação: landscape-server ↔ rabbitmq-server"
+              - "✓ Relação: landscape-server ↔ haproxy"
+
+    # ========================================================================
+    # FASE 9: ESCALAR PARA HA (se 2+ nós)
+    # ========================================================================
+
+    - name: "[HA] Scale out applications to second node"
+      when: (groups['lxd_hosts'] | length) > 1 and '1' in machines_list
+      block:
+        - name: "Display HA scaling message"
+          ansible.builtin.debug:
+            msg: |
+              ┌────────────────────────────────────────────────────────┐
+              │            ESCALANDO PARA HA (2 NÓS)                    │
+              ├────────────────────────────────────────────────────────┤
+              │ Adicionando unidades replicadas no machine-1
+              └────────────────────────────────────────────────────────┘
+
+        - name: "Add PostgreSQL unit to machine-1"
+          ansible.builtin.command: >-
+            juju add-unit postgresql --to lxd:4
+            -m {{ model_name }}
+          changed_when: true
+          ignore_errors: true
+
+        - name: "Add RabbitMQ unit to machine-1"
+          ansible.builtin.command: >-
+            juju add-unit rabbitmq-server --to lxd:4
+            -m {{ model_name }}
+          changed_when: true
+          ignore_errors: true
+
+        - name: "Add Landscape-Server unit to machine-1"
+          ansible.builtin.command: >-
+            juju add-unit landscape-server --to lxd:5
+            -m {{ model_name }}
+          changed_when: true
+          ignore_errors: true
+
+        - name: "Add HAProxy unit to machine-1"
+          ansible.builtin.command: >-
+            juju add-unit haproxy --to lxd:5
+            -m {{ model_name }}
+          changed_when: true
+          ignore_errors: true
+
+        - name: "Display HA units added"
+          ansible.builtin.debug:
+            msg: "✓ Unidades replicadas adicionadas em machine-1"
+
+    # ========================================================================
+    # FASE 10: VERIFICAÇÃO FINAL
+    # ========================================================================
+
+    - name: "[VERIFY] Get final model status"
+      ansible.builtin.command: "juju status -m {{ model_name }} --format=json"
+      register: final_status
+      changed_when: false
+
+    - name: "[VERIFY] Parse final status"
+      ansible.builtin.set_fact:
+        final_apps: "{{ (final_status.stdout | from_json).applications | dict2items | map(attribute='key') | list }}"
+        final_units: "{{ (final_status.stdout | from_json).applications | dict2items | map(attribute='value.units') | map('length') | sum }}"
+
+    - name: "[VERIFY] Display final deployment summary"
+      ansible.builtin.debug:
+        msg: |
+          ┌────────────────────────────────────────────────────────┐
+          │       DEPLOY INDIVIDUAL CONCLUÍDO COM SUCESSO!           │
+          ├────────────────────────────────────────────────────────┤
+          │ Aplicações implantadas: {{ final_apps | join(', ') }}
+          │ Total de unidades: {{ final_units }}
+          │ Modelo: {{ model_name }}
+          ├────────────────────────────────────────────────────────┤
+          │ PRÓXIMAS ETAPAS:
+          │ 1. Verificar saúde: juju status -m {{ model_name }}
+          │ 2. Monitorar logs: juju debug-log -m {{ model_name }}
+          │ 3. Testar acesso: https://<haproxy-ip>
+          │ 4. Configurar clientes Landscape
+          └────────────────────────────────────────────────────────┘
+
+    - name: "[VERIFY] Show raw Juju status"
+      ansible.builtin.command: "juju status -m {{ model_name }}"
+      register: raw_status
+      changed_when: false
+
+    - name: "[VERIFY] Print raw status"
+      ansible.builtin.debug:
+        msg: "{{ raw_status.stdout_lines }}"
