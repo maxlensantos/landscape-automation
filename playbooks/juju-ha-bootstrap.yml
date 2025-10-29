@@ -1,0 +1,175 @@
+---
+# playbooks/juju-ha-bootstrap.yml
+# Deploy Juju em HA com 2 nós apenas
+
+- name: Juju HA Bootstrap para 2 nós
+  hosts: ha_nodes
+  serial: 1
+  remote_user: serpro
+  become: false
+  
+  vars:
+    juju_version: "3.4"
+    bootstrap_node_ip: "10.35.0.9"
+    second_node_ip: "10.35.0.10"
+    controller_name: "ha-controller"
+
+  tasks:
+    # ============================================
+    # 1. PREPARAÇÃO COMUM PARA AMBOS OS NÓS
+    # ============================================
+    - name: Update package cache
+      shell: sudo apt update
+      changed_when: false
+
+    - name: Install LXD and dependencies
+      shell: |
+        sudo apt install -y lxd juju snapd curl wget git
+        sudo snap install lxd --classic || true
+      register: install_result
+      changed_when: "'0 upgraded' not in install_result.stdout"
+
+    - name: Adicionar usuário serpro ao grupo lxd
+      shell: |
+        sudo usermod -aG lxd {{ ansible_user_id }}
+        sudo usermod -aG sudo {{ ansible_user_id }}
+      register: usermod_result
+      changed_when: false
+
+    - name: Verificar LXD está rodando
+      shell: lxc list >/dev/null 2>&1 || sudo systemctl restart snap.lxd.daemon
+      register: lxd_check
+      changed_when: false
+      ignore_errors: true
+
+    # ============================================
+    # 2. BOOTSTRAP JUJU NO PRIMEIRO NÓ APENAS
+    # ============================================
+    - name: Bootstrap Juju Controller (rodando apenas no ha-node-01)
+      block:
+        - name: Create Juju directories
+          file:
+            path: "{{ item }}"
+            state: directory
+            mode: '0755'
+          loop:
+            - ~/.local/share/juju
+            - ~/.local/share/juju/models
+            - ~/.local/share/juju/credentials
+
+        - name: Configure clouds.yaml para manual bootstrap
+          copy:
+            content: |
+              clouds:
+                manual-ha:
+                  type: manual
+            dest: ~/.local/share/juju/clouds.yaml
+            mode: '0644'
+
+        - name: Add cloud to Juju
+          shell: |
+            juju add-cloud manual-ha ~/.local/share/juju/clouds.yaml 2>/dev/null || \
+            juju update-cloud manual-ha ~/.local/share/juju/clouds.yaml 2>/dev/null || true
+          changed_when: false
+
+        - name: Bootstrap Juju on ha-node-01
+          shell: |
+            juju bootstrap manual/serpro@{{ bootstrap_node_ip }} {{ controller_name }} \
+              --keep-broken \
+              --constraints "mem=4G cores=2" \
+              --debug 2>&1 | tee /tmp/juju-bootstrap.log
+          environment:
+            JUJU_DATA: "{{ ansible_env.HOME }}/.local/share/juju"
+          register: bootstrap_result
+          retries: 2
+          delay: 10
+          until: bootstrap_result.rc == 0
+          timeout: 600
+
+        - name: Wait for controller to be ready
+          shell: |
+            for i in {1..30}; do
+              if juju controllers 2>/dev/null | grep -q "{{ controller_name }}"; then
+                echo "Controller ready"
+                exit 0
+              fi
+              sleep 10
+            done
+            echo "Controller timeout"
+            exit 1
+          environment:
+            JUJU_DATA: "{{ ansible_env.HOME }}/.local/share/juju"
+          changed_when: false
+
+        - name: Show bootstrap logs if failed
+          debug:
+            msg: "{{ bootstrap_result.stdout_lines }}"
+          when: bootstrap_result.rc != 0
+
+      when: inventory_hostname == "ha-node-01"
+      tags: bootstrap
+
+    # ============================================
+    # 3. ADICIONAR SEGUNDO NÓ AO CONTROLLER
+    # ============================================
+    - name: Add second machine to Juju controller
+      block:
+        - name: Add ha-node-02 as managed machine
+          shell: |
+            juju add-machine manual/{{ second_node_ip }} \
+              --constraints "mem=4G cores=2" 2>&1 | tee -a /tmp/juju-bootstrap.log
+          environment:
+            JUJU_DATA: "{{ ansible_env.HOME }}/.local/share/juju"
+          register: add_machine_result
+          retries: 2
+          delay: 10
+          until: add_machine_result.rc == 0
+          timeout: 300
+
+        - name: Wait for machine to be added
+          shell: |
+            juju machines -m default 2>/dev/null | grep "{{ second_node_ip }}" || sleep 20
+          environment:
+            JUJU_DATA: "{{ ansible_env.HOME }}/.local/share/juju"
+          changed_when: false
+          ignore_errors: true
+
+      when: inventory_hostname == "ha-node-01"
+      tags: add-machines
+
+    # ============================================
+    # 4. VERIFICAÇÃO FINAL
+    # ============================================
+    - name: Verify Juju status
+      block:
+        - name: Show Juju controllers
+          shell: juju controllers
+          environment:
+            JUJU_DATA: "{{ ansible_env.HOME }}/.local/share/juju"
+          register: controllers_status
+          changed_when: false
+
+        - name: Show Juju machines
+          shell: juju machines -m default 2>/dev/null || echo "Machines não disponíveis ainda"
+          environment:
+            JUJU_DATA: "{{ ansible_env.HOME }}/.local/share/juju"
+          register: machines_status
+          changed_when: false
+
+        - name: Display status
+          debug:
+            msg: |
+              ✓ CONTROLLERS:
+              {{ controllers_status.stdout }}
+              
+              ✓ MACHINES:
+              {{ machines_status.stdout }}
+
+      when: inventory_hostname == "ha-node-01"
+      tags: verify
+
+  post_tasks:
+    - name: Cleanup temporary files
+      shell: rm -f /tmp/ansible-tmp-* /tmp/juju-bootstrap.log
+      changed_when: false
+      ignore_errors: true

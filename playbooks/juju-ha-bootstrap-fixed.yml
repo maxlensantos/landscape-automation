@@ -1,0 +1,469 @@
+---
+# playbooks/juju-ha-bootstrap-fixed.yml
+# Juju 3.4 HA Bootstrap - Configuração para usar serpro em vez de ubuntu
+# DevOps Pattern Correto com tratamento de SSH via bastion
+
+- name: Juju HA Bootstrap para 2 nós (Juju 3.4)
+  hosts: ha_nodes
+  serial: 1
+  remote_user: serpro
+  become: false
+  gather_facts: yes
+  
+  vars:
+    juju_version: "3.4"
+    bootstrap_node_ip: "10.35.0.9"
+    second_node_ip: "10.35.0.10"
+    controller_name: "ha-controller"
+
+  pre_tasks:
+    - name: Verify connectivity to ha-nodes
+      ping: 
+
+    - name: Set dynamic variables from facts
+      set_fact:
+        juju_data_dir: "{{ ansible_user_dir }}/.local/share/juju"
+        ssh_key_path: "{{ ansible_user_dir }}/.ssh/id_rsa"
+
+    - name: Display node information
+      debug:
+        msg: |
+          Conectado em: {{ inventory_hostname }}
+          IP: {{ ansible_host }}
+          Usuário: {{ ansible_user }}
+          Home directory: {{ ansible_user_dir }}
+          Diretório Juju: {{ juju_data_dir }}
+          SSH key: {{ ssh_key_path }}
+
+  tasks:
+    # ============================================ 
+    # 1. PREPARAÇÃO: Instalar dependências
+    # ============================================ 
+    - name: Update package cache
+      shell: sudo apt update
+      changed_when: false
+      register: apt_update
+      retries: 3
+      delay: 5
+
+    - name: Install core dependencies
+      apt:
+        name:
+          - curl
+          - wget
+          - git
+          - openssh-server
+          - openssh-client
+          - snapd
+          - python3-apt
+        state: present
+        update_cache: no
+      become: yes
+      register: install_core
+      retries: 3
+      delay: 5
+
+    - name: Install LXD and Juju
+      shell: |
+        sudo snap install lxd --classic 2>&1
+        sudo snap install juju --classic 2>&1
+      register: snap_install
+      changed_when: "'already installed' not in snap_install.stdout"
+      retries: 3
+      delay: 5
+
+    - name: Start LXD service
+      shell: |
+        sudo systemctl restart snap.lxd.daemon 2>/dev/null || \
+        sudo systemctl restart lxd 2>/dev/null || \
+        sleep 5 && lxc list >/dev/null 2>&1
+      changed_when: false
+      retries: 3
+      delay: 5
+
+    - name: Add serpro to lxd group
+      shell: sudo usermod -aG lxd serpro && sudo usermod -aG sudo serpro
+      changed_when: false
+      ignore_errors: true
+
+    - name: Verify LXD is accessible
+      shell: lxc list
+      register: lxc_list
+      retries: 5
+      delay: 5
+      changed_when: false
+
+    # ============================================ 
+    # 2. CONFIGURAR SSH PARA JUJU
+    # ============================================ 
+    - name: Create SSH directory
+      file:
+        path: "{{ ansible_env.HOME }}/.ssh"
+        state: directory
+        mode: '0700'
+
+    - name: Generate SSH key pair if not exists
+      shell: |
+        if [ ! -f {{ ssh_key_path }} ]; then
+          ssh-keygen -t rsa -b 4096 -N "" -f {{ ssh_key_path }}
+          echo "SSH key generated"
+        else
+          echo "SSH key already exists"
+        fi
+      register: ssh_keygen
+      changed_when: "'generated' in ssh_keygen.stdout"
+
+    - name: Ensure SSH key permissions
+      file:
+        path: "{{ ssh_key_path }}"
+        mode: '0600'
+
+    - name: Ensure SSH public key permissions
+      file:
+        path: "{{ ssh_key_path }}.pub"
+        mode: '0644'
+
+    - name: Add all ha-nodes to known_hosts (disable strict checking)
+      shell: |
+        mkdir -p ~/.ssh
+        ssh-keyscan -H 10.35.0.9 >> ~/.ssh/known_hosts 2>/dev/null || true
+        ssh-keyscan -H 10.35.0.10 >> ~/.ssh/known_hosts 2>/dev/null || true
+        ssh-keyscan -H localhost >> ~/.ssh/known_hosts 2>/dev/null || true
+        ssh-keyscan -H 127.0.0.1 >> ~/.ssh/known_hosts 2>/dev/null || true
+      changed_when: false
+      ignore_errors: true
+
+    - name: Configure SSH config for local HA connections
+      copy:
+        content: |
+          # Auto-generated for Juju HA Bootstrap
+          Host 10.35.0.*
+            User serpro
+            StrictHostKeyChecking no
+            UserKnownHostsFile=/dev/null
+            IdentityFile ~/.ssh/id_rsa
+            IdentityFile ~/.ssh/id_ed25519
+            ConnectTimeout 10
+            BatchMode yes
+
+          Host localhost 127.0.0.1
+            StrictHostKeyChecking no
+            UserKnownHostsFile=/dev/null
+
+          Host *
+            AddKeysToAgent yes
+            IdentitiesOnly yes
+        dest: "{{ ansible_env.HOME }}/.ssh/config"
+        mode: '0600'
+
+    - name: Test SSH to both nodes
+      shell: |
+        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 serpro@{{ item }} "echo ✓ SSH OK to {{ item }}"
+      loop:
+        - "10.35.0.9"
+        - "10.35.0.10"
+      changed_when: false
+      ignore_errors: true
+      register: ssh_test
+
+    # ============================================ 
+    # 3. PREPARAR JUJU DIRECTORIES E CONFIG
+    # ============================================ 
+    - name: Create Juju directory structure
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ juju_data_dir }}"
+        - "{{ juju_data_dir }}/models"
+        - "{{ juju_data_dir }}/credentials"
+        - "{{ juju_data_dir }}/clouds"
+        - "{{ juju_data_dir }}/logs"
+
+    - name: Configure clouds.yaml para Juju 3.4 manual cloud
+      copy:
+        content: |
+          clouds:
+            manual-ha:
+              type: manual
+              regions:
+                default:
+                  endpoint: null
+        dest: "{{ juju_data_dir }}/clouds.yaml"
+        mode: '0644'
+      register: clouds_yaml
+
+    - name: Add manual cloud to Juju
+      shell: |
+        export JUJU_DATA={{ juju_data_dir }}
+        juju add-cloud manual-ha {{ juju_data_dir }}/clouds.yaml 2>&1 || \
+        juju update-cloud manual-ha {{ juju_data_dir }}/clouds.yaml 2>&1 || true
+      environment:
+        JUJU_DATA: "{{ juju_data_dir }}"
+      register: add_cloud
+      changed_when: false
+      ignore_errors: true
+
+    - name: Verify Juju installation
+      shell: juju version
+      register: juju_version_check
+      changed_when: false
+
+    - name: Display Juju version
+      debug:
+        msg: "Juju version: {{ juju_version_check.stdout }}"
+
+    # ============================================ 
+    # 4. BOOTSTRAP JUJU (apenas no primeiro nó)
+    # ============================================ 
+    - name: Bootstrap Juju Controller on ha-node-01
+      block:
+        - name: Clean up any previous bootstrap state
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            rm -rf {{ juju_data_dir }}/models/{{ controller_name }}
+            rm -rf {{ juju_data_dir }}/bootstrap-state.yaml
+            juju destroy-controller {{ controller_name }} --force 2>/dev/null || true
+            sleep 3
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          changed_when: false
+          ignore_errors: true
+
+        - name: Create bootstrap log directory
+          file:
+            path: /tmp/juju-logs
+            state: directory
+            mode: '0755'
+
+        - name: Check if controller already exists
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju controllers | grep -q "{{ controller_name }}"
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          register: controller_exists
+          failed_when: false
+          changed_when: false
+
+        - name: Bootstrap Juju Controller with manual cloud
+          shell: |
+            set -o pipefail
+            export JUJU_DATA={{ juju_data_dir }}
+            export PATH=/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            
+            juju bootstrap manual/serpro@{{ bootstrap_node_ip }} {{ controller_name }} \
+              --keep-broken \
+              --constraints "mem=4G cores=2" \
+              --config default-series=jammy \
+              --config image-stream=released \
+              --debug 2>&1 | tee /tmp/juju-logs/bootstrap-{{ inventory_hostname }}.log
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+            JUJU_SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          register: bootstrap_result
+          timeout: 900
+          retries: 2
+          delay: 15
+          until: bootstrap_result.rc == 0 or "SSH2_MSG_USERAUTH_SUCCESS" in bootstrap_result.stdout
+          when: controller_exists.rc != 0
+
+        - name: Display bootstrap output on success
+          debug:
+            msg: |
+              Bootstrap successful!
+              Last 30 lines:
+              {{ bootstrap_result.stdout_lines[-30:] | join('\n') }}
+          when: bootstrap_result.changed
+
+        - name: Display bootstrap output on failure
+          debug:
+            msg: |
+              Bootstrap failed with return code: {{ bootstrap_result.rc }}
+              Last 50 lines:
+              {{ bootstrap_result.stdout_lines[-50:] | join('\n') }}
+          when: bootstrap_result.changed and bootstrap_result.rc != 0
+
+        - name: Wait for controller to become responsive
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            export PATH=/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            
+            for i in {1..120}; do
+              echo "Checking controller status ($i/120)..."
+              if juju controllers 2>/dev/null | grep -q "{{ controller_name }}"; then
+                echo "✓ Controller found!"
+                sleep 10
+                if juju status -m controller 2>/dev/null | grep -q "ha-controller"; then
+                  echo "✓ Controller is ready!"
+                  exit 0
+                fi
+              fi
+              sleep 5
+            done
+            echo "✗ Controller did not become ready"
+            exit 1
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          timeout: 720
+          changed_when: false
+          register: wait_controller
+
+        - name: Get controller status
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju controllers
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          register: controller_status
+          changed_when: false
+
+        - name: Display controller status
+          debug:
+            msg: |
+              ✓ JUJU CONTROLLERS:
+              {{ controller_status.stdout }}
+
+      when: inventory_hostname == "ha-node-01"
+      tags: bootstrap
+      rescue:
+        - name: Show bootstrap logs on failure
+          shell: |
+            echo "=== LAST 100 LINES OF BOOTSTRAP LOG ==="
+            tail -100 /tmp/juju-logs/bootstrap-{{ inventory_hostname }}.log
+          register: log_output
+          changed_when: false
+
+        - name: Display error logs
+          debug:
+            msg: "{{ log_output.stdout }}"
+
+    - name: Clear machine log file
+      shell: "> /tmp/juju-logs/machines-ha-node-01.log"
+      when: inventory_hostname == "ha-node-01"
+
+    # ============================================ 
+    # 5. ADICIONAR SEGUNDO NÓ AO CONTROLLER
+    # ============================================ 
+    - name: Add second machine to Juju controller
+      block:
+        - name: Pause before adding second machine
+          pause:
+            seconds: 10
+            prompt: "Aguardando estabilização do controller antes de adicionar segundo nó..."
+
+        - name: Add ha-node-02 as managed machine
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            export PATH=/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            
+            juju add-machine ssh:serpro@{{ second_node_ip }} \
+              --constraints "mem=4G cores=2" \
+              -m controller 2>&1 | tee -a /tmp/juju-logs/machines-{{ inventory_hostname }}.log
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+            JUJU_SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          register: add_machine_result
+          timeout: 600
+          retries: 3
+          delay: 20
+          until: add_machine_result.rc == 0
+
+        - name: Wait for machines to be provisioned
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            export PATH=/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            
+            for i in {1..60}; do
+              echo "Waiting for machines to start ($i/60)..."
+              started=$(juju machines -m controller 2>/dev/null | grep -c "started" || echo "0")
+              if [ "$started" -ge 2 ]; then
+                echo "✓ All machines are started!"
+                exit 0
+              fi
+              sleep 10
+            done
+            echo "✗ Machines did not start in time"
+            juju machines -m controller
+            exit 1
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          timeout: 720
+          changed_when: false
+          register: wait_machines
+
+        - name: Get machines status
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju machines -m controller
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          register: machines_final
+          changed_when: false
+
+        - name: Display machines status
+          debug:
+            msg: |
+              ✓ JUJU MACHINES:
+              {{ machines_final.stdout }}
+
+      when: inventory_hostname == "ha-node-01"
+      tags: add-machines
+      ignore_errors: false
+
+    # ============================================ 
+    # 6. VERIFICAÇÃO FINAL
+    # ============================================ 
+    - name: Final verification on bootstrap node
+      block:
+        - name: Show Juju status summary
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            echo "=== CONTROLLERS ==="
+            juju controllers
+            echo ""
+            echo "=== MACHINES ==="
+            juju machines -m controller 2>/dev/null || echo "Máquinas não disponíveis ainda"
+            echo ""
+            echo "=== MODEL INFO ==="
+            juju status -m controller 2>/dev/null | head -20 || echo "Status não disponível"
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          register: final_status
+          changed_when: false
+
+        - name: Display final comprehensive status
+          debug:
+            msg: |
+              ╔════════════════════════════════════════════════════════════╗
+              ║         JUJU HA BOOTSTRAP - STATUS FINAL                   ║
+              ╚════════════════════════════════════════════════════════════╝
+              
+              {{ final_status.stdout }}
+              
+              ✓ Bootstrap completado com sucesso em {{ inventory_hostname }}
+
+      when: inventory_hostname == "ha-node-01"
+      tags: verify
+
+  post_tasks:
+    - name: Archive bootstrap logs
+      shell: |
+        mkdir -p /tmp/juju-logs-archive
+        cp -v /tmp/juju-logs/*.log /tmp/juju-logs-archive/ 2>/dev/null || true
+        echo "Logs salvos em /tmp/juju-logs-archive/"
+      changed_when: false
+      ignore_errors: true
+
+    - name: Cleanup temporary Ansible files
+      shell: |
+        rm -rf /tmp/ansible-tmp-*
+      changed_when: false
+      ignore_errors: true
+      tags: cleanup
+
+  handlers:
+    - name: restart lxd
+      shell: sudo systemctl restart snap.lxd.daemon
+      changed_when: false

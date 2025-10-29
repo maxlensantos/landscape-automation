@@ -36,10 +36,31 @@
         channel: "5.0/stable"
         state: present
 
+    - name: "Forcefully restart the LXD service"
+      ansible.builtin.systemd:
+        name: snap.lxd.daemon
+        state: restarted
+        daemon_reload: yes
+
+    - name: "Wait 20 seconds for service to settle after restart"
+      ansible.builtin.pause:
+        seconds: 20
+
+    - name: "Wait for LXD socket to be ready"
+      ansible.builtin.wait_for:
+        path: /var/snap/lxd/common/lxd/unix.socket
+        state: present
+        delay: 5
+        timeout: 300
+      changed_when: false
+
     - name: "Initialize LXD using auto configuration (idempotent)"
       ansible.builtin.command: lxd init --auto
       register: lxd_init
       changed_when: "'LXD has been successfully configured' in lxd_init.stdout"
+      retries: 10
+      delay: 15
+      until: "lxd_init.rc == 0"
 
     - name: "Install the Juju snap with classic confinement"
       ansible.builtin.snap:

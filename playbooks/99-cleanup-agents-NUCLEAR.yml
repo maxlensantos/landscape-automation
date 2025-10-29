@@ -1,0 +1,302 @@
+---
+# playbooks/99-cleanup-agents-nuclear.yml
+# LIMPEZA NUCLEAR DO JUJU - Remove TUDO para evitar "machine is already provisioned"
+# Baseado em: /usr/sbin/remove-juju-services (equivalente em Ansible)
+# 
+# CRÍTICO: Execute isso ANTES de fazer novo bootstrap
+
+- name: 🔴 LIMPEZA NUCLEAR - Remove todos os serviços Juju
+  hosts: ha_nodes
+  remote_user: serpro
+  become: yes
+  gather_facts: yes
+
+  vars:
+    juju_snap_path: "/snap/juju"
+    juju_data_dir: "/home/serpro/.local/share/juju"
+    juju_services:
+      - jujud
+      - mongod
+      - etcd
+
+  pre_tasks:
+    - name: ⚠️  AVISO CRÍTICO
+      debug:
+        msg: |
+          ╔═══════════════════════════════════════════════════════════════╗
+          ║          🔴 LIMPEZA NUCLEAR DO JUJU EM PROGRESSO             ║
+          ║                                                               
+          ║  AÇÃO: Removendo TODOS os serviços, dados e config do Juju   ║
+          ║  ALVO: {{ inventory_hostname }}                              ║
+          ║  DATA: {{ ansible_date_time.iso8601 }}                       ║
+          ║                                                               
+          ║  ⚠️  AVISO: Isto é IRREVERSÍVEL. Dados locais serão perdidos.║
+          ║                                                               
+          ║  Continuando em 5 segundos...                                
+          ╚═══════════════════════════════════════════════════════════════╝
+
+    - name: Pausa antes de iniciar limpeza
+      pause:
+        seconds: 5
+
+  tasks:
+        # ============================================
+        # 1. KILL ALL JUJU PROCESSES (Força Bruta)
+        # ============================================
+        - name: 🔴 PASSO 1 - Kill ALL Juju Processes (Aggressive)
+          block:
+            - name: Aggressively kill jujud, juju, and mongod processes
+              shell: |
+                sudo pkill -9 jujud juju mongod 2>/dev/null || true
+                sleep 2
+              changed_when: true
+              ignore_errors: true
+    
+            - name: Remove juju and juju-db snap packages
+              shell: |
+                sudo snap remove juju --purge 2>/dev/null || true
+                sudo snap remove juju-db --purge 2>/dev/null || true
+                sleep 5
+              changed_when: true
+              ignore_errors: true
+    
+            - name: Remove juju data directories
+              shell: |
+                sudo rm -rf /var/lib/juju /var/run/juju /var/cache/juju /var/snap/juju* 2>/dev/null || true
+                rm -rf ~/.local/share/juju ~/.juju ~/.cache/juju 2>/dev/null || true
+              changed_when: true
+              ignore_errors: true
+    
+            - name: Verify no jujud processes are running after aggressive kill
+              shell: |
+                if pgrep -f jujud > /dev/null; then
+                  echo "❌ ERRO: jujud ainda está rodando após pkill!"
+                  ps aux | grep jujud
+                  exit 1
+                fi
+                echo "✓ Nenhum processo jujud rodando"
+              changed_when: false
+        - name: Kill mongod processes
+          shell: |
+            killall -9 mongod 2>/dev/null || true
+            sleep 1
+            ps aux | grep mongod | grep -v grep || echo "✓ mongod killado"
+          changed_when: false
+          ignore_errors: true
+
+        - name: Kill etcd processes
+          shell: |
+            killall -9 etcd 2>/dev/null || true
+            sleep 1
+            ps aux | grep etcd | grep -v grep || echo "✓ etcd killado"
+          changed_when: false
+          ignore_errors: true
+
+        - name: Verify all processes are dead
+          shell: |
+            sleep 2
+            if pgrep -f jujud > /dev/null; then
+              echo "❌ ERRO: jujud ainda está rodando!"
+              ps aux | grep jujud
+              exit 1
+            fi
+            echo "✓ Todos os processos Juju foram killados"
+          changed_when: false
+
+    tags: kill_processes
+
+    # ============================================ 
+    # 2. REMOVE JUJU SNAP
+    # ============================================ 
+    - name: 🔴 PASSO 2 - Remove Juju Snap Package
+      block:
+        - name: Remove juju snap
+          shell: |
+            snap remove juju --purge 2>&1 || true
+            sleep 3
+            echo "✓ Snap juju removido"
+          changed_when: false
+
+        - name: Verify snap is removed
+          shell: |
+            snap list 2>/dev/null | grep -q juju && \
+              { echo "❌ ERRO: juju snap ainda está instalado!"; exit 1; } || \
+                          echo "✓ Snap juju verificado como removido"
+                        changed_when: false
+                  tags: remove_snap
+
+    # ============================================ 
+    # 3. REMOVE ALL JUJU DATA DIRECTORIES
+    # ============================================ 
+    - name: 🔴 PASSO 3 - Remove Juju Data Directories
+      block:
+        - name: Remove /var/lib/juju
+          shell: |
+            rm -rf /var/lib/juju 2>&1 || true
+            echo "✓ /var/lib/juju removido"
+          changed_when: false
+
+        - name: Remove juju home directory (user serpro)
+          shell: |
+            rm -rf /home/serpro/.local/share/juju 2>&1 || true
+            echo "✓ ~/.local/share/juju removido"
+          changed_when: false
+
+        - name: Remove juju root directory
+          shell: |
+            rm -rf /root/.local/share/juju 2>&1 || true
+            echo "✓ /root/.local/share/juju removido"
+          changed_when: false
+
+        - name: Remove snap directories
+          shell: |
+            rm -rf /snap/juju* 2>&1 || true
+            rm -rf /var/snap/juju* 2>&1 || true
+            echo "✓ /snap/juju* e /var/snap/juju* removidos"
+          changed_when: false
+
+        - name: Remove any remaining Juju config
+          shell: |
+            rm -rf /etc/juju* 2>&1 || true
+            rm -rf ~/.ssh/juju* 2>&1 || true
+            echo "✓ Arquivos de configuração Juju removidos"
+          changed_when: false
+
+        - name: Verify directories are removed
+          shell: |
+            if [ -d /var/lib/juju ] || [ -d /home/serpro/.local/share/juju ]; then
+              echo "❌ ERRO: Alguns diretórios ainda existem!"
+              ls -la /var/lib/juju 2>/dev/null || true
+              ls -la /home/serpro/.local/share/juju 2>/dev/null || true
+              exit 1
+            fi
+                        echo "✓ Todos os diretórios de dados foram removidos"
+                      changed_when: false
+                tags: remove_data
+
+    # ============================================ 
+    # 4. CLEAN JUJU AGENT FILES
+    # ============================================ 
+    - name: 🔴 PASSO 4 - Clean Juju Agent Files
+      block:
+        - name: Remove agent files
+          shell: |
+            rm -rf /var/log/juju* 2>&1 || true
+            rm -rf /tmp/juju* 2>&1 || true
+            rm -rf ~/.juju 2>&1 || true
+            echo "✓ Arquivos de agente removidos"
+          changed_when: false
+
+        - name: Remove sockets and locks
+          shell: |
+            rm -f /tmp/.juju* 2>&1 || true
+            rm -f /var/run/juju* 2>&1 || true
+                        echo "✓ Sockets e locks removidos"
+                      changed_when: false
+                tags: clean_agent_files
+
+    # ============================================ 
+    # 5. CLEAN CLOUD-INIT & SYSTEM
+    # ============================================ 
+    - name: 🔴 PASSO 5 - Clean System
+      block:
+        - name: Clean cloud-init
+          shell: |
+            cloud-init clean --logs --seed 2>&1 || true
+            echo "✓ cloud-init limpo"
+          changed_when: false
+
+        - name: Clean package cache
+          shell: |
+            apt-get clean 2>&1 || true
+            apt-get autoclean 2>&1 || true
+                        echo "✓ Cache de pacotes limpo"
+                      changed_when: false
+                tags: clean_system
+                  become: yes
+
+    # ============================================ 
+    # 6. VERIFY CLEAN STATE
+    # ============================================ 
+    - name: 🟢 VERIFICAÇÃO FINAL - Estado Limpo
+      block:
+        - name: Verify no juju processes
+          shell: |
+            if pgrep -f jujud > /dev/null; then
+              echo "❌ ERRO: Ainda há processos jujud!"
+              exit 1
+            fi
+            if pgrep -f mongod > /dev/null; then
+              echo "❌ ERRO: Ainda há processos mongod!"
+              exit 1
+            fi
+            echo "✓ Nenhum processo Juju rodando"
+          changed_when: false
+
+        - name: Verify directories removed
+          shell: |
+            if [ -d /var/lib/juju ]; then
+              echo "❌ ERRO: /var/lib/juju ainda existe!"
+              exit 1
+            fi
+            if [ -d /home/serpro/.local/share/juju ]; then
+              echo "❌ ERRO: ~/.local/share/juju ainda existe!"
+              exit 1
+            fi
+            echo "✓ Todos os diretórios foram removidos"
+          changed_when: false
+
+        - name: Display cleanup summary
+          debug:
+            msg: |
+              ╔═══════════════════════════════════════════════════════════════╗
+              ║          ✅ LIMPEZA NUCLEAR CONCLUÍDA COM SUCESSO            ║
+              ║                                                               
+              ║  Host: {{ inventory_hostname }}                              ║
+              ║  Timestamp: {{ ansible_date_time.iso8601 }}                  ║
+              ║                                                               
+              ║  ✓ Todos os processos Juju killados                          ║
+              ║  ✓ Snap juju removido                                        ║
+              ║  ✓ Todos os diretórios de dados removidos                    ║
+              ║  ✓ Arquivos de configuração removidos                        ║
+              ║  ✓ Estado do sistema: LIMPO                                  ║
+              ║                                                               
+              ║  Próximo Passo: Executar bootstrap novamente                 ║
+              ║  Comando: ansible-playbook -i inventory playbooks/01-*.yml   ║
+              ║                                                               
+              ╚═══════════════════════════════════════════════════════════════╝
+    tags: verify_clean
+
+  post_tasks:
+    - name: Generate cleanup report
+      shell: |
+        cat > /tmp/cleanup-report-{{ inventory_hostname }}-$(date +%s).txt << EOF
+        JUJU CLEANUP NUCLEAR REPORT
+        ===========================
+        Generated: $(date -Iseconds)
+        Host: {{ inventory_hostname }} 
+        
+        Cleanup Actions Completed:
+        ✓ All Juju processes killed (-9)
+        ✓ Juju snap removed (--purge)
+        ✓ /var/lib/juju removed
+        ✓ ~/.local/share/juju removed
+        ✓ /snap/juju* removed
+        ✓ /var/snap/juju* removed
+        ✓ Juju config files removed
+        ✓ Agent files cleaned
+        ✓ cloud-init cleaned
+        ✓ Package cache cleaned
+        
+        System Status: CLEAN
+        Ready for new bootstrap: YES
+        EOF
+        
+        echo "Report saved to /tmp/cleanup-report-*.txt"
+      changed_when: false
+      ignore_errors: true
+
+  handlers:
+    - name: system reboot required
+      debug:
+        msg: "⚠️  RECOMENDAÇÃO: Reiniciar o host para garantir limpeza completa"

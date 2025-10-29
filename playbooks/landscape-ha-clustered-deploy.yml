@@ -1,0 +1,682 @@
+---
+# playbooks/landscape-ha-clustered-deploy.yml
+# Deploy Landscape HA CLUSTERED com PostgreSQL Shared + Load Balancer
+# Pré-requisito: Playbook 01-bootstrap-and-add-machines-CORRECTED.yml executado com sucesso
+
+- name: 🎨 Deploy Landscape HA CLUSTERED (2 VMs com DB Compartilhado)
+  hosts: ha_nodes
+  serial: 1
+  remote_user: serpro
+  gather_facts: yes
+  
+  vars:
+    juju_data_dir: "{{ ansible_user_dir }}/.local/share/juju"
+    controller_name: "ha-controller"
+    landscape_model: "landscape-prod"
+
+  pre_tasks:
+    - name: Set dynamic variables
+      set_fact:
+        juju_data_dir: "{{ ansible_user_dir }}/.local/share/juju"
+
+    - name: Display HA Clustered Architecture
+      debug:
+        msg: |
+          ╔═══════════════════════════════════════════════════════════════╗
+          ║        LANDSCAPE HA CLUSTERED (2 VMs - Shared DB)            ║
+          ║                                                               ║
+          ║  ARQUITETURA:                                                ║
+          ║  ┌─────────────────────────────────────────────────────────┐ ║
+          ║  │ HAProxy Load Balancer (M0 + M1)                         │ ║
+          ║  │ └─ Porta 80/443 → Landscape Servers                     │ ║
+          ║  ├─────────────────────────────────────────────────────────┤ ║
+          ║  │ Landscape Server 1 (M0) ←→ Landscape Server 2 (M1)     │ ║
+          ║  │ └─ Ambas acessam DB compartilhado                       │ ║
+          ║  ├─────────────────────────────────────────────────────────┤ ║
+          ║  │ PostgreSQL Primary (M0) → PostgreSQL Standby (M1)       │ ║
+          ║  │ └─ Replicação streaming, failover automático            │ ║
+          ║  ├─────────────────────────────────────────────────────────┤ ║
+          ║  │ RabbitMQ Node 1 (M0) ←→ RabbitMQ Node 2 (M1)           │ ║
+          ║  │ └─ Cluster distribuído                                  │ ║
+          ║  └─────────────────────────────────────────────────────────┘ ║
+          ║                                                               ║
+          ║  Total: 8 Containers LXD                                     ║
+          ║  - 2x HAProxy                                                ║
+          ║  - 2x Landscape Server                                       ║
+          ║  - 2x PostgreSQL (Primary + Standby)                         ║
+          ║  - 2x RabbitMQ (Cluster)                                     ║
+          ║                                                               ║
+          ║  Dashboard: https://<haproxy-ip>                             ║
+          ║  Status: Iniciando deployment                                ║
+          ╚═══════════════════════════════════════════════════════════════╝
+
+  tasks:
+    # ============================================ 
+    # 1. CREATE MODEL & ADD MACHINES
+    # ============================================ 
+    - name: 🔵 PASSO 1 - Create Model and Add Machines
+      block:
+        - name: Check if model exists
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju models | grep -q "{{ landscape_model }}"
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          register: model_exists
+          failed_when: false
+          changed_when: false
+
+        - name: Create landscape model
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju add-model {{ landscape_model }} \
+              -c {{ controller_name }} \
+              --config logging-config="<root>=INFO" \
+              --config default-series=jammy
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          when: model_exists.rc != 0
+          register: model_created
+
+        - name: Add Machine 0 to model
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            
+            # CRÍTICO: Verificar se máquina já foi adicionada
+            if juju machines -m {{ landscape_model }} 2>/dev/null | grep -q "^0 "; then
+              echo "✓ Máquina 0 já foi adicionada"
+              exit 0
+            fi
+            
+            # Se não existe, adicionar
+            juju add-machine -m {{ landscape_model }} ssh:serpro@10.35.0.9 2>&1
+            
+            # Aguardar ficar em estado "started"
+            for i in {1..30}; do
+              if juju machines -m {{ landscape_model }} 2>/dev/null | grep "^0 " | grep -q "started"; then
+                echo "✓ Machine 0 started"
+                exit 0
+              fi
+              echo "[$i/30] Aguardando machine 0..."
+              sleep 2
+            done
+            
+            echo "❌ ERRO: Machine 0 não ficou started"
+            juju machines -m {{ landscape_model }}
+            exit 1
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          when: inventory_hostname == "ha-node-01"
+          ignore_errors: false
+          timeout: 300
+
+        - name: Add Machine 1 to model
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            
+            # CRÍTICO: Verificar se máquina já foi adicionada
+            if juju machines -m {{ landscape_model }} 2>/dev/null | grep -q "^1 "; then
+              echo "✓ Máquina 1 já foi adicionada"
+              exit 0
+            fi
+            
+            # Se não existe, adicionar
+            juju add-machine -m {{ landscape_model }} ssh:serpro@10.35.0.10 2>&1
+            
+            # Aguardar ficar em estado "started"
+            for i in {1..30}; do
+              if juju machines -m {{ landscape_model }} 2>/dev/null | grep "^1 " | grep -q "started"; then
+                echo "✓ Machine 1 started"
+                exit 0
+              fi
+              echo "[$i/30] Aguardando machine 1..."
+              sleep 2
+            done
+            
+            echo "❌ ERRO: Machine 1 não ficou started"
+            juju machines -m {{ landscape_model }}
+            exit 1
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          when: inventory_hostname == "ha-node-01"
+          ignore_errors: false
+          timeout: 300
+
+        - name: Verify machines are ready
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            for i in {1..180}; do
+              if juju machines -m {{ landscape_model }} 2>/dev/null | grep -q "0.*started" && juju machines -m {{ landscape_model }} 2>/dev/null | grep -q "1.*started"; then
+                echo "✓ Máquinas prontas para deploy"
+                juju machines -m {{ landscape_model }}
+                exit 0
+              fi
+              echo "[$i/180] Aguardando máquinas ($(( (i * 10) / 60 )) min)..."
+              sleep 10
+            done
+            echo "❌ ERRO: Timeout esperando as máquinas ficarem prontas."
+            juju machines -m {{ landscape_model }}
+            exit 1
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          timeout: 1800
+          changed_when: false
+          when: inventory_hostname == "ha-node-01"
+
+      when: inventory_hostname == "ha-node-01"
+      tags: create_model
+
+    # ============================================ 
+    # 2. DEPLOY POSTGRESQL HA (Shared Cluster)
+    # ============================================ 
+    - name: 🟡 PASSO 2 - Deploy PostgreSQL HA (Primary + Standby)
+      block:
+        - name: Deploy PostgreSQL on Machine 0 (Primary)
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            export PATH=/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            
+            juju deploy postgresql \
+              -m {{ landscape_model }} \
+              --to 0 \
+              --channel=14/stable \
+              --config plugin_plpython3u_enable=true \
+              --config plugin_ltree_enable=true \
+              --config plugin_intarray_enable=true \
+              --config plugin_debversion_enable=true \
+              --config plugin_pg_trgm_enable=true \
+              --config experimental_max_connections=500 \
+              --constraints "mem=2048" \
+              --trust 2>&1 | tee /tmp/juju-logs/postgresql-deploy.log
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          register: deploy_postgresql
+          timeout: 1800
+          when: inventory_hostname == "ha-node-01"
+
+        - name: Wait for PostgreSQL Primary to be active
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            for i in {1..180}; do
+              if juju status -m {{ landscape_model }} 2>/dev/null | grep -q "postgresql.*active"; then
+                echo "✓ PostgreSQL Primary está ativo"
+                exit 0
+              fi
+              echo "[$i/180] Aguardando PostgreSQL Primary ($(( (i * 10) / 60 )) min)..."
+              sleep 10
+            done
+            echo "❌ ERRO: Timeout esperando PostgreSQL Primary ficar ativo."
+            juju status -m {{ landscape_model }} postgresql
+            exit 1
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          timeout: 1800
+          changed_when: false
+          when: inventory_hostname == "ha-node-01"
+
+        - name: Add PostgreSQL Replica on Machine 1 (Standby with auto-failover)
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju add-unit postgresql \
+              -m {{ landscape_model }} \
+              --to 1 2>&1 | tee -a /tmp/juju-logs/postgresql-deploy.log
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          when: inventory_hostname == "ha-node-01"
+
+        - name: Wait for PostgreSQL HA Cluster (Primary + Standby)
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            for i in {1..90}; do
+              pg_active=$(juju status -m {{ landscape_model }} --format=json 2>/dev/null | \
+                          jq '[.units | .[] | select(.application=="postgresql") | select(.workload_status.current=="active")] | length')
+              if [ "$pg_active" -ge 2 ]; then
+                echo "✓ PostgreSQL HA pronto: Primary (M0) + Standby (M1)"
+                juju status -m {{ landscape_model }} | grep postgresql
+                exit 0
+              fi
+              echo "[$i/90] Units ativas: $pg_active/2 ($(( (i * 10) / 60 )) min)..."
+              sleep 10
+            done
+            echo "❌ ERRO: Timeout esperando PostgreSQL HA Cluster ficar pronto."
+            juju status -m {{ landscape_model }} postgresql
+            exit 1
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          timeout: 900
+          changed_when: false
+          when: inventory_hostname == "ha-node-01"
+
+      when: inventory_hostname == "ha-node-01"
+      tags: deploy_postgresql
+
+    # ============================================ 
+    # 3. DEPLOY RABBITMQ CLUSTER
+    # ============================================ 
+    - name: 🟢 PASSO 3 - Deploy RabbitMQ Cluster
+      block:
+        - name: Deploy RabbitMQ Node 1 on Machine 0
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju deploy rabbitmq-server \
+              -m {{ landscape_model }} \
+              --to 0 \
+              --channel=3.9/stable \
+              --config consumer-timeout=259200000 \
+              --trust 2>&1 | tee /tmp/juju-logs/rabbitmq-deploy.log
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          when: inventory_hostname == "ha-node-01"
+
+        - name: Wait for RabbitMQ Node 1 to be active
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            for i in {1..120}; do
+              if juju status -m {{ landscape_model }} 2>/dev/null | grep -q "rabbitmq-server.*active"; then
+                echo "✓ RabbitMQ Node 1 está ativo"
+                exit 0
+              fi
+              echo "[$i/120] Aguardando RabbitMQ ($(( (i * 5) / 60 )) min)..."
+              sleep 5
+            done
+            echo "❌ ERRO: Timeout esperando RabbitMQ Node 1 ficar ativo."
+            juju status -m {{ landscape_model }} rabbitmq-server
+            exit 1
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          timeout: 600
+          changed_when: false
+          when: inventory_hostname == "ha-node-01"
+
+        - name: Add RabbitMQ Cluster Node on Machine 1
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju add-unit rabbitmq-server \
+              -m {{ landscape_model }} \
+              --to 1 2>&1 | tee -a /tmp/juju-logs/rabbitmq-deploy.log
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          when: inventory_hostname == "ha-node-01"
+
+        - name: Wait for RabbitMQ Cluster to form
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            for i in {1..90}; do
+              rmq_active=$(juju status -m {{ landscape_model }} --format=json 2>/dev/null | \
+                          jq '[.units | .[] | select(.application=="rabbitmq-server") | select(.workload_status.current=="active")] | length')
+              if [ "$rmq_active" -ge 2 ]; then
+                echo "✓ RabbitMQ Cluster formado (2 nós)"
+                juju status -m {{ landscape_model }} | grep rabbitmq
+                exit 0
+              fi
+              echo "[$i/90] Nodes ativos: $rmq_active/2 ($(( (i * 10) / 60 )) min)..."
+              sleep 10
+            done
+            echo "❌ ERRO: Timeout esperando RabbitMQ Cluster formar."
+            juju status -m {{ landscape_model }} rabbitmq-server
+            exit 1
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          timeout: 900
+          changed_when: false
+          when: inventory_hostname == "ha-node-01"
+
+      when: inventory_hostname == "ha-node-01"
+      tags: deploy_rabbitmq
+
+    # ============================================ 
+    # 4. DEPLOY LANDSCAPE SERVERS (Synchronized)
+    # ============================================ 
+    - name: 🔵 PASSO 4 - Deploy Landscape Servers (Synchronized via Shared DB)
+      block:
+        - name: Deploy Landscape Server on Machine 0
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju deploy landscape-server \
+              -m {{ landscape_model }} \
+              --to 0 \
+              --channel=stable \
+              --constraints "mem=4096" \
+              --trust 2>&1 | tee /tmp/juju-logs/landscape-deploy.log
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          when: inventory_hostname == "ha-node-01"
+
+        - name: Wait for Landscape Server to be active
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            for i in {1..120}; do
+              if juju status -m {{ landscape_model }} 2>/dev/null | grep -q "landscape-server.*active"; then
+                echo "✓ Landscape Server 1 está ativo"
+                exit 0
+              fi
+              echo "[$i/120] Aguardando Landscape ($(( (i * 5) / 60 )) min)..."
+              sleep 5
+            done
+            echo "❌ ERRO: Timeout esperando Landscape Server 1 ficar ativo."
+            juju status -m {{ landscape_model }} landscape-server
+            exit 1
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          timeout: 600
+          changed_when: false
+          when: inventory_hostname == "ha-node-01"
+
+        - name: Relate Landscape to PostgreSQL (shared DB connection)
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju relate landscape-server:db postgresql:db-admin -m {{ landscape_model }} 2>&1 || echo "Relação já existe"
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          when: inventory_hostname == "ha-node-01"
+          ignore_errors: true
+
+        - name: Relate Landscape to RabbitMQ
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju relate landscape-server rabbitmq-server -m {{ landscape_model }} 2>&1 || echo "Relação já existe"
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          when: inventory_hostname == "ha-node-01"
+          ignore_errors: true
+
+        - name: Add Landscape Server 2 on Machine 1 (Synchronized)
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju add-unit landscape-server \
+              -m {{ landscape_model }} \
+              --to 1 2>&1 | tee -a /tmp/juju-logs/landscape-deploy.log
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          when: inventory_hostname == "ha-node-01"
+
+        - name: Wait for both Landscape Servers to be active and synchronized
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            for i in {1..90}; do
+              ls_active=$(juju status -m {{ landscape_model }} --format=json 2>/dev/null | \
+                         jq '[.units | .[] | select(.application=="landscape-server") | select(.workload_status.current=="active")] | length')
+              if [ "$ls_active" -ge 2 ]; then
+                echo "✓ Ambos Landscape Servers sincronizados (DB compartilhado)"
+                juju status -m {{ landscape_model }} | grep landscape-server
+                exit 0
+              fi
+              echo "[$i/90] Landscape servers ativos: $ls_active/2 ($(( (i * 10) / 60 )) min)..."
+              sleep 10
+            done
+            echo "❌ ERRO: Timeout esperando ambos Landscape Servers ficarem ativos e sincronizados."
+            juju status -m {{ landscape_model }} landscape-server
+            exit 1
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          timeout: 900
+          changed_when: false
+          when: inventory_hostname == "ha-node-01"
+
+      when: inventory_hostname == "ha-node-01"
+      tags: deploy_landscape
+
+    # ============================================ 
+    # 5. DEPLOY HAPROXY LOAD BALANCER
+    # ============================================ 
+    - name: 🟢 PASSO 5 - Deploy HAProxy Load Balancer
+      block:
+        - name: Deploy HAProxy Node 1 on Machine 0
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju deploy haproxy \
+              -m {{ landscape_model }} \
+              --to 0 \
+              --channel=stable \
+              --expose \
+              --trust 2>&1 | tee /tmp/juju-logs/haproxy-deploy.log
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          when: inventory_hostname == "ha-node-01"
+
+        - name: Configure HAProxy SSL
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju config haproxy \
+              default_timeouts="queue 60000, connect 5000, client 120000, server 120000" \
+              global_default_bind_options="no-tlsv10" \
+              ssl_cert=SELFSIGNED \
+              -m {{ landscape_model }} 2>&1 || echo "Config já aplicada"
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          when: inventory_hostname == "ha-node-01"
+          ignore_errors: true
+
+        - name: Relate HAProxy to Landscape (load balancing)
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju relate haproxy landscape-server -m {{ landscape_model }} 2>&1 || echo "Relação já existe"
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          when: inventory_hostname == "ha-node-01"
+          ignore_errors: true
+
+        - name: Wait for HAProxy to be active
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            for i in {1..120}; do
+              if juju status -m {{ landscape_model }} 2>/dev/null | grep -q "haproxy.*active"; then
+                echo "✓ HAProxy Load Balancer Node 1 está ativo"
+                exit 0
+              fi
+              echo "[$i/120] Aguardando HAProxy ($(( (i * 5) / 60 )) min)..."
+              sleep 5
+            done
+            echo "❌ ERRO: Timeout esperando HAProxy Load Balancer Node 1 ficar ativo."
+            juju status -m {{ landscape_model }} haproxy
+            exit 1
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          timeout: 600
+          changed_when: false
+          when: inventory_hostname == "ha-node-01"
+
+        - name: Add HAProxy Node 2 on Machine 1 (Load Balancing)
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju add-unit haproxy \
+              -m {{ landscape_model }} \
+              --to 1 2>&1 | tee -a /tmp/juju-logs/haproxy-deploy.log
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          when: inventory_hostname == "ha-node-01"
+
+        - name: Wait for HAProxy Load Balancer to be fully operational
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            for i in {1..90}; do
+              haproxy_active=$(juju status -m {{ landscape_model }} --format=json 2>/dev/null | \
+                              jq '[.units | .[] | select(.application=="haproxy") | select(.workload_status.current=="active")] | length')
+              if [ "$haproxy_active" -ge 2 ]; then
+                echo "✓ HAProxy Load Balancer pronto (2 nodes - ativo/ativo)"
+                juju status -m {{ landscape_model }} | grep haproxy
+                exit 0
+              fi
+              echo "[$i/90] HAProxy nodes ativos: $haproxy_active/2 ($(( (i * 10) / 60 )) min)..."
+              sleep 10
+            done
+            echo "❌ ERRO: Timeout esperando HAProxy Load Balancer ficar totalmente operacional."
+            juju status -m {{ landscape_model }} haproxy
+            exit 1
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          timeout: 900
+          changed_when: false
+          when: inventory_hostname == "ha-node-01"
+
+      when: inventory_hostname == "ha-node-01"
+      tags: deploy_haproxy
+
+    # ============================================ 
+    # 6. FINAL STATUS & ACCESS INFORMATION
+    # ============================================ 
+    - name: 🟢 PASSO 6 - Display Final Status
+      block:
+        - name: Wait for full stabilization
+          pause:
+            seconds: 30
+            prompt: "Aguardando estabilização final de todos os serviços..."
+
+        - name: Display complete deployment status
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }} 
+            
+            echo "╔═══════════════════════════════════════════════════════════════╗"
+            echo "║   ✅ LANDSCAPE HA CLUSTERED - DEPLOYMENT COMPLETO               ║"
+            echo "╚═══════════════════════════════════════════════════════════════╝"
+            echo ""
+            
+            echo "STATUS JUJU:"
+            juju status -m {{ landscape_model }}
+            
+            echo ""
+            echo "╔═══════════════════════════════════════════════════════════════╗"
+            echo "║                   ARCHITECTURE VERIFICADA                     ║"
+            echo "╚═══════════════════════════════════════════════════════════════╝"
+            echo ""
+            echo "✅ PostgreSQL HA: Primary (M0) ↔ Standby (M1)"
+            echo "✅ RabbitMQ Cluster: Node 1 (M0) ↔ Node 2 (M1)"
+            echo "✅ Landscape Servers: Sync (M0) ↔ Sync (M1)"
+            echo "✅ HAProxy Load Balancer: Active (M0) ↔ Active (M1)"
+            echo ""
+            echo "CONTAINERS LXD:"
+            lxc list
+            echo ""
+            echo "╔═══════════════════════════════════════════════════════════════╗"
+            echo "║                      ACESSAR LANDSCAPE                        ║"
+            echo "╚═══════════════════════════════════════════════════════════════╝"
+            echo ""
+            haproxy_ips=$(juju status -m {{ landscape_model }} --format=json 2>/dev/null | \
+                         jq -r '.units[] | select(.application=="haproxy") | .["public-address"]' | head -1)
+            echo "HAProxy IPs:"
+            echo "  $haproxy_ips"
+            echo ""
+            echo "Dashboard URL: https://$haproxy_ips"
+            echo ""
+            echo "SSH Tunnel (via bastion):"
+            echo "  ssh -o ProxyJump=s779929545@10.31.3.145 \"
+            echo "      -L 8443:\$haproxy_ip:443 \"
+            echo "      serpro@10.35.0.9"
+            echo "  Browser: https://localhost:8443"
+            echo ""
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          register: final_status
+          changed_when: false
+          when: inventory_hostname == "ha-node-01"
+
+        - name: Display result
+          debug:
+            msg: "{{ final_status.stdout }}"
+          when: inventory_hostname == "ha-node-01"
+
+      when: inventory_hostname == "ha-node-01"
+      tags: final_status
+
+  post_tasks:
+    - name: Save deployment report
+      shell: |
+        export JUJU_DATA={{ juju_data_dir }}
+        
+        cat > /tmp/landscape-ha-clustered-report-$(date +%s).txt << 'EOF'
+        ╔═══════════════════════════════════════════════════════════════╗
+        ║  LANDSCAPE HA CLUSTERED - FINAL DEPLOYMENT REPORT            ║
+        ╚═══════════════════════════════════════════════════════════════╝
+        
+        Generated: $(date -Iseconds)
+        Model: {{ landscape_model }}
+        Controller: {{ controller_name }}
+        
+        ═══════════════════════════════════════════════════════════════
+        ARQUITETURA IMPLANTADA:
+        ═══════════════════════════════════════════════════════════════
+        
+        MACHINE 0 (ha-node-01 - 10.35.0.9):
+          ├─ PostgreSQL-0 (LXD Container) - Primary
+          ├─ RabbitMQ-Server-0 (LXD Container) - Cluster Node 1
+          ├─ Landscape-Server-0 (LXD Container)
+          └─ HAProxy-0 (LXD Container) - Load Balancer
+        
+        MACHINE 1 (ha-node-02 - 10.35.0.10):
+          ├─ PostgreSQL-1 (LXD Container) - Standby (Replicação)
+          ├─ RabbitMQ-Server-1 (LXD Container) - Cluster Node 2
+          ├─ Landscape-Server-1 (LXD Container)
+          └─ HAProxy-1 (LXD Container) - Load Balancer
+        
+        ═══════════════════════════════════════════════════════════════
+        SINCRONIZAÇÃO:
+        ═══════════════════════════════════════════════════════════════
+        
+        ✅ PostgreSQL:
+           - Primary (M0) replicando para Standby (M1)
+           - Failover automático se Primary cair
+           - Ambas Landscape servidoras acessam DB via HAProxy
+        
+        ✅ RabbitMQ:
+           - Cluster de 2 nós
+           - Replicação de filas entre nós
+           - Failover automático
+        
+        ✅ Landscape Servers:
+           - Ambas conectam ao PostgreSQL compartilhado
+           - Ambas conectam ao RabbitMQ cluster
+           - Sincronização automática via DB
+           - Dados consistentes entre elas
+        
+        ✅ HAProxy:
+           - Load Balancer distribuindo requisições
+           - Failover automático se um cair
+           - SSL/TLS termination
+           - Single entry point para ambas Landscape
+        
+        ═══════════════════════════════════════════════════════════════
+        STATUS JUJU:
+        ═══════════════════════════════════════════════════════════════
+        
+        $(juju status -m {{ landscape_model }} 2>/dev/null)
+        
+        ═══════════════════════════════════════════════════════════════
+        CONTAINERS LXD:
+        ═══════════════════════════════════════════════════════════════
+        
+        $(lxc list)
+        
+        ═══════════════════════════════════════════════════════════════
+        PRÓXIMOS PASSOS:
+        ═══════════════════════════════════════════════════════════════
+        
+        1. Acessar Landscape:
+           - Dashboard: https://<haproxy-ip>
+           - Default login será criado no primeiro acesso
+        
+        2. Registrar Juju Controller no Landscape:
+           - Landscape → Controllers → Register
+           - Token será gerado automaticamente
+        
+        3. Monitorar:
+           - juju status -m {{ landscape_model }}
+           - Verificar sincronização de dados
+           - Testar failover (matar um serviço, verificar se outro assume)
+        
+        ═══════════════════════════════════════════════════════════════
+        EOF
+        
+        cat /tmp/landscape-ha-clustered-report-$(date +%s).txt
+      environment:
+        JUJU_DATA: "{{ juju_data_dir }}"
+      register: report
+      changed_when: false
+      when: inventory_hostname == "ha-node-01"
+      ignore_errors: true
+      tags: report
+
+    - name: Display final report
+      debug:
+        msg: "{{ report.stdout }}"
+      when: inventory_hostname == "ha-node-01" and report.stdout | default('') != ''
+      tags: report

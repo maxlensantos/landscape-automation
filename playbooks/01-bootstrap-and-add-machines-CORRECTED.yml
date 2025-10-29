@@ -1,0 +1,262 @@
+---
+# playbooks/01-bootstrap-and-add-machines-CORRECTED.yml
+# Bootstrap Juju Controller + Add ALL Machines (HA Multi-nó)
+# CRÍTICO: Todas as máquinas devem ser adicionadas para HA funcionar
+
+- name: 🚀 Bootstrap Juju + Add All Machines for HA
+  hosts: ha_nodes
+  serial: 1
+  remote_user: serpro
+  gather_facts: yes
+  
+  vars:
+    juju_data_dir: "{{ ansible_user_dir }}/.local/share/juju"
+    controller_name: "ha-controller"
+    bootstrap_node_ip: "10.35.0.9"
+    
+    # CRÍTICO: Mapeamento de TODOS os nós
+    ha_nodes_map:
+      ha-node-01: "10.35.0.9"
+      ha-node-02: "10.35.0.10"
+      # ha-node-03: "10.35.0.11"  # Descomente se tiver 3º nó
+
+  pre_tasks:
+    - name: Set dynamic variables
+      set_fact:
+        juju_data_dir: "{{ ansible_user_dir }}/.local/share/juju"
+
+    - name: Display HA Bootstrap Architecture
+      debug:
+        msg: |
+          ╔═══════════════════════════════════════════════════════════════╗
+          ║        JUJU HA BOOTSTRAP + ADD MACHINES                       ║
+          ║                                                               
+          ║  Controller Node: ha-node-01 (10.35.0.9)                     
+          ║  Agent Nodes: ha-node-02 (10.35.0.10)                        
+          ║                                                               
+          ║  Máquinas a adicionar:                                       
+          {% for node_name, node_ip in ha_nodes_map.items() %}
+          ║    - {{ node_name }} ({{ node_ip }})                         
+          {% endfor %}
+          ║                                                               
+          ║  Status: Iniciando bootstrap                                 
+          ╚═══════════════════════════════════════════════════════════════╝
+
+  tasks:
+    # ============================================ 
+    # 1. BOOTSTRAP JUJU CONTROLLER
+    # ============================================ 
+    - name: 🔴 PASSO 1 - Bootstrap Juju Controller (ha-node-01 only)
+      block:
+        - name: Check if controller already exists
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju controllers | grep -q "{{ controller_name }}"
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          register: controller_exists
+          failed_when: false
+          changed_when: false
+
+        - name: Skip bootstrap if controller exists
+          debug:
+            msg: "✓ Controller {{ controller_name }} já existe. Pulando bootstrap."
+          when: controller_exists.rc == 0
+
+        - name: Create Juju directories
+          file:
+            path: "{{ item }}"
+            state: directory
+            mode: '0755'
+          loop:
+            - "{{ juju_data_dir }}"
+            - "{{ juju_data_dir }}/models"
+            - "{{ juju_data_dir }}/credentials"
+
+        - name: Configure clouds.yaml
+          copy:
+            content: |
+              clouds:
+                manual-ha:
+                  type: manual
+            dest: "{{ juju_data_dir }}/clouds.yaml"
+            mode: '0644'
+
+        - name: Add cloud to Juju
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            juju add-cloud manual-ha {{ juju_data_dir }}/clouds.yaml 2>/dev/null || \
+            juju update-cloud manual-ha {{ juju_data_dir }}/clouds.yaml 2>/dev/null || true
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          changed_when: false
+          ignore_errors: true
+
+        - name: Bootstrap Juju Controller (manual/serpro@{{ bootstrap_node_ip }})
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            export PATH=/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            
+            juju bootstrap manual/serpro@{{ bootstrap_node_ip }} {{ controller_name }} \
+              --keep-broken \
+              --constraints "mem=4G cores=2" \
+              --config default-series=jammy \
+              --debug 2>&1 | tee /tmp/juju-logs/bootstrap.log
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+            JUJU_SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          register: bootstrap_result
+          timeout: 900
+          retries: 2
+          delay: 15
+          when: controller_exists.rc != 0
+
+        - name: Wait for controller to be ready
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            i=0
+            while [ $i -lt 120 ]; do
+              if juju controllers 2>/dev/null | grep -q "{{ controller_name }}"; then
+                echo "✓ Controller pronto"
+                sleep 10
+                juju status -m controller 2>/dev/null && exit 0
+              fi
+              echo "[$i/120] Aguardando controller..."
+              sleep 5
+              i=$((i+1))
+            done
+            exit 1
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          timeout: 720
+          changed_when: false
+          when: controller_exists.rc != 0
+
+        - name: Display bootstrap result
+          debug:
+            msg: |
+              ✅ Juju Controller {{ controller_name }} está PRONTO!
+              Controllers:
+              {{ lookup('pipe', 'export JUJU_DATA=' + juju_data_dir + ' && juju controllers') }}
+
+      when: inventory_hostname == "ha-node-01"
+      tags: bootstrap_controller
+
+    # ============================================ 
+    # 2. ADD ALL MACHINES TO CONTROLLER
+    # ============================================ 
+    - name: 🟡 PASSO 2 - Add All Machines to Controller
+      block:
+        - name: Add machines from inventory
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            export PATH=/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            
+            # Adicionar TODAS as máquinas do ha_nodes_map
+            {% for node_name, node_ip in ha_nodes_map.items() %}
+            echo "Adicionando {{ node_name }} ({{ node_ip }})..."
+            juju add-machine ssh:serpro@{{ node_ip }} -m controller 2>&1 || echo "{{ node_name }} já adicionada"
+            {% endfor %}
+            
+            echo "✓ Todas as máquinas adicionadas"
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+            JUJU_SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          register: add_machines_result
+          timeout: 600
+          retries: 2
+          delay: 10
+          when: inventory_hostname == "ha-node-01"
+
+        - name: Wait for all machines to be started
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            i=0
+            while [ $i -lt 120 ]; do
+              started=$(juju machines -m controller 2>/dev/null | grep -c "started" || echo "0")
+              total={{ ha_nodes_map | length }}
+              if [ "$started" -ge "$total" ]; then
+                echo "✓ Todas as $total máquinas estão started!"
+                juju machines -m controller
+                exit 0
+              fi
+              echo "[$i/120] Máquinas started: $started/$total"
+              sleep 10
+              i=$((i+1))
+            done
+            exit 1
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          timeout: 1200
+          changed_when: false
+          when: inventory_hostname == "ha-node-01"
+
+      when: inventory_hostname == "ha-node-01"
+      tags: add_machines
+
+    # ============================================ 
+    # 3. VERIFY HA CLUSTER
+    # ============================================ 
+    - name: 🟢 PASSO 3 - Verify HA Cluster is Ready
+      block:
+        - name: Display cluster status
+          shell: |
+            export JUJU_DATA={{ juju_data_dir }}
+            
+            echo "╔═══════════════════════════════════════════════════════════════╗"
+            echo "║          ✅ JUJU HA CLUSTER - BOOTSTRAP COMPLETO            ║"
+            echo "╚═══════════════════════════════════════════════════════════════╝"
+            echo ""
+            
+            echo "CONTROLLERS:"
+            juju controllers
+            echo ""
+            
+            echo "MACHINES:"
+            juju machines -m controller
+            echo ""
+            
+            echo "STATUS:"
+            juju status -m controller
+          environment:
+            JUJU_DATA: "{{ juju_data_dir }}"
+          register: cluster_status
+          changed_when: false
+          when: inventory_hostname == "ha-node-01"
+
+        - name: Display result
+          debug:
+            msg: "{{ cluster_status.stdout }}"
+          when: inventory_hostname == "ha-node-01"
+
+      when: inventory_hostname == "ha-node-01"
+      tags: verify_cluster
+
+  post_tasks:
+    - name: Save bootstrap report
+      shell: |
+        export JUJU_DATA={{ juju_data_dir }}
+        
+        cat > /tmp/bootstrap-report-$(date +%s).txt << 'EOF'
+        JUJU HA BOOTSTRAP REPORT
+        ========================
+        Generated: $(date -Iseconds)
+        
+        Controller: {{ controller_name }}
+        Bootstrap Node: {{ bootstrap_node_ip }}
+        
+        Machines Added:
+        $(juju machines -m controller 2>/dev/null)
+        
+        Controllers:
+        $(juju controllers 2>/dev/null)
+        
+        Status: READY FOR LANDSCAPE DEPLOYMENT
+        EOF
+        
+        cat /tmp/bootstrap-report-*.txt
+      environment:
+        JUJU_DATA: "{{ juju_data_dir }}"
+      changed_when: false
+      when: inventory_hostname == "ha-node-01"
+      ignore_errors: true

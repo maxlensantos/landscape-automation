@@ -10,7 +10,7 @@
   gather_facts: yes
 
   vars:
-    second_node_user: "{{ hostvars[groups['lxd_hosts'][1]]['ansible_user'] | default('ubuntu') }}"
+    second_node_user: "{{ hostvars[groups['lxd_hosts'][1]]['ansible_user'] | default('serpro') }}"
     second_node_host: "{{ hostvars[groups['lxd_hosts'][1]]['ansible_host'] }}"
     second_node_name: "{{ groups['lxd_hosts'][1] }}"
 

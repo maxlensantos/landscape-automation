@@ -1,15 +1,82 @@
 ---
-- name: Add LXC Machines to Model
+# playbooks/02-add-lxc-machines.yml - CORRIGIDO
+# Pré-provisiona máquinas LXC (contêineres) para hospedar os charms
+
+- name: "Add LXC Machines to Model (Pré-provisionar Contêineres)"
   hosts: "{{ groups['lxd_hosts'][0] }}"
   gather_facts: no
   become: no
-  when: "groups['lxd_hosts'] | length > 1"
 
   tasks:
-    - name: Add 3 LXC machines to node 0
-      command: "/snap/bin/juju add-machine lxd:0 -n 3 -m {{ controller_name }}:{{ model_name }}"
+
+    - name: "[PRE] Validate is_ha_cluster flag"
+      ansible.builtin.assert:
+        that:
+          - "is_ha_cluster | bool"
+        fail_msg: "ERROR: is_ha_cluster deve ser true"
+        success_msg: "✓ HA cluster flag validado"
+
+    - name: "[PRE] Get current machines"
+      ansible.builtin.command: "juju machines -m {{ model_name }} --format=json"
+      register: current_machines
+      changed_when: false
+
+    - name: "[PRE] Parse machines"
+      ansible.builtin.set_fact:
+        machine_count: "{{ (current_machines.stdout | from_json).machines | length }}"
+
+    - name: "[PRE] Display current state"
+      ansible.builtin.debug:
+        msg: "Máquinas atuais: {{ machine_count }}, Modelo: {{ model_name }}"
+
+    - name: "[LXC] Add 3 LXC machines to machine-0"
+      ansible.builtin.command: >-
+        juju add-machine lxd:0 -n 3 -m {{ model_name }}
+      register: add_lxc_0
       changed_when: true
 
-    - name: Add 3 LXC machines to node 1
-      command: "/snap/bin/juju add-machine lxd:1 -n 3 -m {{ controller_name }}:{{ model_name }}"
+    - name: "[WAIT] Wait for LXC machines on machine-0"
+      ansible.builtin.command: >-
+        juju status -m {{ model_name }} --format=json
+      register: status_check_0
+      until:
+        - "(status_check_0.stdout | from_json).machines | length >= 5"
+      retries: 30
+      delay: 10
+      changed_when: false
+
+    - name: "[LXC] Add 3 LXC machines to machine-1 (HA)"
+      when: (groups['lxd_hosts'] | length) > 1
+      ansible.builtin.command: >-
+        juju add-machine lxd:1 -n 3 -m {{ model_name }}
+      register: add_lxc_1
       changed_when: true
+
+    - name: "[WAIT] Wait for LXC machines on machine-1"
+      when: (groups['lxd_hosts'] | length) > 1
+      ansible.builtin.command: >-
+        juju status -m {{ model_name }} --format=json
+      register: status_check_1
+      until:
+        - "(status_check_1.stdout | from_json).machines | length >= 8"
+      retries: 30
+      delay: 10
+      changed_when: false
+
+    - name: "[VERIFY] Get final machines"
+      ansible.builtin.command: "juju status -m {{ model_name }} --format=json"
+      register: final_machines
+      changed_when: false
+
+    - name: "[VERIFY] Display final status"
+      ansible.builtin.debug:
+        msg: |
+          ╔────────────────────────────────────────────────────┐
+          │   ✓ LXC MACHINES PRÉ-PROVISIONADAS COM SUCESSO!   │
+          ├────────────────────────────────────────────────────┤
+          │ Total: {{ (final_machines.stdout | from_json).machines | length }} máquinas
+          │ lxd:0-2 → machine-0 ({{ groups['lxd_hosts'][0] }})
+          {% if (groups['lxd_hosts'] | length) > 1 %}
+          │ lxd:3-5 → machine-1 ({{ groups['lxd_hosts'][1] }})
+          {% endif %}
+          └────────────────────────────────────────────────────┘
