@@ -1,0 +1,32 @@
+---
+- name: Nuke Juju from orbit
+  hosts: all
+  gather_facts: no
+  become: yes
+
+  tasks:
+    - name: Stop jujud services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - jujud-machine-0
+        - jujud-machine-1
+        - jujud-machine-2
+        - jujud-machine-3
+      ignore_errors: yes
+
+    - name: Kill all jujud processes
+      ansible.builtin.command: "killall -9 jujud"
+      ignore_errors: yes
+
+    - name: Remove Juju data directory
+      ansible.builtin.file:
+        path: /var/lib/juju
+        state: absent
+
+    - name: Remove Juju config directory
+      become: yes
+      ansible.builtin.file:
+        path: /home/serpro/.local/share/juju
+        state: absent

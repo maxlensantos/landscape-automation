@@ -1,0 +1,84 @@
+---
+- name: Direct Juju Bootstrap - Manual Provider
+  hosts: ha-node-01
+  gather_facts: no
+  
+  tasks:
+    - name: "Step 1: Wait for system ready"
+      pause:
+        seconds: 5
+
+    - name: "Step 1.5: Destroy existing Juju controller (if any)"
+      shell: |
+        export PATH=$PATH:/snap/bin
+        juju destroy-controller ha-controller --destroy-all-models --no-prompt 2>&1 || true
+      ignore_errors: yes
+
+    - name: "Step 2: Bootstrap Juju Controller"
+      shell: |
+        export PATH=$PATH:/snap/bin
+        juju bootstrap \
+          manual/serpro@10.35.0.9 \
+          ha-controller \
+          --constraints "mem=4G cores=2" \
+          --config enable-os-refresh-update=false \
+          --config enable-os-upgrade=true \
+          --verbose 2>&1 | tee /tmp/bootstrap.log
+      register: bootstrap_result
+      timeout: 600
+
+    - name: "Step 3: Show bootstrap exit code"
+      debug:
+        msg: "Bootstrap exit code: {{ bootstrap_result.rc }}"
+
+    - name: "Step 4: Show last 50 lines of bootstrap log"
+      shell: tail -50 /tmp/bootstrap.log
+      register: bootstrap_log
+
+    - name: "Step 5: Display bootstrap log"
+      debug:
+        msg: "{{ bootstrap_log.stdout_lines }}"
+
+    - name: "Step 6: Wait 60 seconds for controller to stabilize"
+      pause:
+        seconds: 60
+
+    - name: "Step 7: Check controller status"
+      shell: |
+        export PATH=$PATH:/snap/bin
+        juju status -m controller 2>&1
+      register: controller_status
+      retries: 5
+      delay: 10
+      until: controller_status.rc == 0
+
+    - name: "Step 8: Show controller status"
+      debug:
+        msg: "Controller is responsive"
+
+    - name: "Step 9: Create default model"
+      shell: |
+        export PATH=$PATH:/snap/bin
+        juju add-model default 2>&1
+      register: model_result
+      ignore_errors: yes
+
+    - name: "Step 10: Wait for model"
+      pause:
+        seconds: 15
+
+    - name: "Step 11: Final status"
+      shell: |
+        export PATH=$PATH:/snap/bin
+        juju status 2>&1
+      register: final_status
+
+    - name: "Step 12: Show final status"
+      debug:
+        msg: |
+          ╔════════════════════════════════════════════════════╗
+          ║  ✓ JUJU BOOTSTRAP SUCCESSFUL                      ║
+          ║    Controller: ha-controller                       ║
+          ║    Model: default                                  ║
+          ║    Status: Ready for deployment                    ║
+          ╚════════════════════════════════════════════════════╝

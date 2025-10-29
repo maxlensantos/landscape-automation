@@ -1,0 +1,151 @@
+---
+- name: Full Juju Bootstrap Orchestration
+  hosts: ha-node-01
+  gather_facts: yes
+
+  tasks:
+    # ============ PHASE 1: Cleanup ============
+    - name: "[PHASE 1] List all LXD containers"
+      command: lxc list --format json
+      register: lxc_list
+      changed_when: false
+
+    - name: "[PHASE 1] Parse containers"
+      set_fact:
+        all_containers: "{{ lxc_list.stdout | from_json }}"
+        juju_containers: "{{ (lxc_list.stdout | from_json) | selectattr('name', 'match', '^juju-.*') | list }}"
+
+    - name: "[PHASE 1] Show containers to delete"
+      debug:
+        msg:
+          - "Total containers: {{ all_containers | length }}"
+          - "Juju containers: {{ juju_containers | map(attribute='name') | list }}"
+
+    - name: "[PHASE 1] Stop Juju containers"
+      command: "lxc stop {{ item.name }}"
+      loop: "{{ juju_containers }}"
+      ignore_errors: yes
+
+    - name: "[PHASE 1] Delete Juju containers"
+      command: "lxc delete {{ item.name }}"
+      loop: "{{ juju_containers }}"
+      ignore_errors: yes
+
+    - name: "[PHASE 1] Remove Juju state directories"
+      shell: "rm -rf {{ item }}"
+      loop:
+        - /var/lib/juju
+        - /home/serpro/.local/share/juju/controllers
+        - /home/serpro/.local/share/juju/accounts.yaml
+
+    - name: "[PHASE 1] Wait for LXD to settle"
+      pause:
+        seconds: 10
+
+    - name: "[PHASE 1] Verify cleanup"
+      command: lxc list --format json
+      register: lxc_verify
+      changed_when: false
+
+    - name: "[PHASE 1] Confirm no Juju containers remain"
+      debug:
+        msg: "Containers remaining: {{ (lxc_verify.stdout | from_json) | length }}"
+
+    # ============ PHASE 2A: Cloud Setup ============
+    - name: "[PHASE 2A] Create manual-cloud.yaml"
+      copy:
+        dest: /home/serpro/manual-cloud.yaml
+        owner: serpro
+        group: serpro
+        mode: '0600'
+        content: |
+          clouds:
+            on-premise-manual:
+              type: manual
+              endpoint: {{ ansible_user }}@{{ hostvars[groups['lxd_hosts'][0]]['ansible_host'] }}
+
+    - name: "[PHASE 2A] Register on-premise-manual cloud"
+      command: juju add-cloud on-premise-manual /home/serpro/manual-cloud.yaml --client
+      register: cloud_result
+      changed_when: "'successfully added' in cloud_result.stderr"
+      ignore_errors: yes
+
+    - name: "[PHASE 2A] Show cloud registration result"
+      debug:
+        msg: "{{ cloud_result.stderr_lines }}"
+
+    # ============ PHASE 2B: Bootstrap ============
+    - name: "[PHASE 2B] Execute Juju bootstrap"
+      command: >
+        juju bootstrap 
+        on-premise-manual/default 
+        ha-controller 
+        --constraints "mem=4G cores=2" 
+        --config enable-os-refresh-update=false 
+        --debug
+      register: bootstrap_result
+      timeout: 600
+
+    - name: "[PHASE 2] Bootstrap output"
+      debug:
+        msg: "{{ bootstrap_result.stderr_lines }}"
+
+    - name: "[PHASE 2] Wait for controller initialization"
+      pause:
+        seconds: 40
+
+    # ============ PHASE 3: Validation (CORRIGIDO) ============
+    - name: "[PHASE 3] Check controller status"
+      command: juju status -m controller
+      register: controller_status
+      retries: 5
+      delay: 10
+      until: controller_status.rc == 0
+
+    - name: "[PHASE 3] Parse controller status"
+      set_fact:
+        status_output: "{{ controller_status.stdout }}"
+
+    - name: "[PHASE 3] Show controller status"
+      debug:
+        msg: "{{ status_output }}"
+
+    # ============ PHASE 4: Create Default Model ============
+    - name: "[PHASE 4] Create default model"
+      command: juju add-model default
+      register: model_result
+      ignore_errors: yes
+
+    - name: "[PHASE 4] Show model creation result"
+      debug:
+        msg: "{{ model_result.stderr_lines if model_result.stderr_lines else model_result.stdout_lines }}"
+
+    - name: "[PHASE 4] Wait for model initialization"
+      pause:
+        seconds: 15
+
+    - name: "[PHASE 4] Verify full status"
+      command: juju status
+      register: full_status
+
+    - name: "[PHASE 4] Show full status"
+      debug:
+        msg: "{{ full_status.stdout_lines }}"
+
+    # ============ PHASE 5: Summary ============
+    - name: "[FINAL] Bootstrap Success Summary"
+      debug:
+        msg:
+          - ""
+          - "╔════════════════════════════════════════════╗"
+          - "║  ✓ JUJU BOOTSTRAP COMPLETED SUCCESSFULLY  ║"
+          - "║    Host: {{ inventory_hostname }}         ║"
+          - "║    Controller: ha-controller              ║"
+          - "║    Model: default (ready)                 ║"
+          - "╚════════════════════════════════════════════╝"
+          - ""
+          - "Next steps:"
+          - "  1. Deploy applications: juju deploy <charm>"
+          - "  2. List models: juju models"
+          - "  3. Switch model: juju switch <model-name>"
+          - ""

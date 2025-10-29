@@ -1,0 +1,10 @@
+---
+- name: "Reboot Node to Ensure Clean State"
+  hosts: lxd_hosts
+  become: yes
+  gather_facts: no
+
+  tasks:
+    - name: "Reboot the machine and wait for it to come back"
+      ansible.builtin.reboot:
+        reboot_timeout: 3600 # Wait up to 1 hour for reboot

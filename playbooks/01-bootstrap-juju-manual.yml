@@ -1,0 +1,78 @@
+---
+- name: "Bootstrap Juju Controller and Create Model"
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  become: no
+  gather_facts: yes
+
+  vars:
+    manual_cloud_name: "on-premise-manual"
+    manual_cloud_endpoint: "{{ hostvars[groups['lxd_hosts'][0]]['ansible_host'] }}"
+    bootstrap_timeout: 600  # 10 minutos
+    remote_user_home: "/home/{{ ansible_user }}"
+
+  tasks:
+    - name: "[PREP] Create manual-cloud.yaml configuration file"
+      ansible.builtin.copy:
+        dest: /home/serpro/manual-cloud.yaml
+        content: |
+          clouds:
+            {{ manual_cloud_name }}:
+              type: manual
+              endpoint: {{ manual_cloud_endpoint }}
+        mode: '0600'
+
+
+    - name: "[CLOUD] Remove old cloud registration (if exists)"
+      ansible.builtin.command: "juju remove-cloud {{ manual_cloud_name }} --client"
+      failed_when: false
+      changed_when: false
+
+    - name: "[CLOUD] Add manual cloud to Juju"
+      ansible.builtin.command: "juju add-cloud {{ manual_cloud_name }} /home/serpro/manual-cloud.yaml --client"
+
+    - name: "[FIREWALL] Open Juju Controller firewall ports"
+      become: yes
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "17070"  # Juju Controller API (INCOMING from agents)
+      when:
+        - ansible_facts['os_family'] == "Debian"
+        - inventory_hostname == groups['lxd_hosts'][0]
+
+    - name: "[PREP] Unregister machine"
+      ansible.builtin.command: "juju unregister --no-prompt"
+      failed_when: false
+
+    - name: "[BOOTSTRAP] Execute Juju bootstrap"
+      ansible.builtin.command: >-
+        juju bootstrap
+        {{ manual_cloud_name }}
+        {{ controller_name }}
+        --constraints "mem=4G cores=2"
+        --config enable-os-refresh-update=false
+      register: bootstrap_result
+      retries: 2
+      delay: 30
+      until: bootstrap_result.rc == 0
+
+    - name: "[MODEL] Create Juju model for Landscape"
+      ansible.builtin.command: "juju add-model {{ model_name }} -c {{ controller_name }}"
+      register: model_result
+      failed_when:
+        - model_result.rc != 0
+        - "'already exists' not in model_result.stderr"
+      changed_when: "'already exists' not in model_result.stderr"
+
+    - name: "[HA] Add second node to the controller"
+      ansible.builtin.command: "juju add-machine ssh:{{ hostvars[groups['lxd_hosts'][1]]['ansible_host'] }}"
+
+    - name: "[VALIDATE] Verify bootstrap and model are accessible"
+      ansible.builtin.command: "juju status -m {{ controller_name }}:{{ model_name }}"
+      retries: 5
+      delay: 10
+      register: status
+      until: status.rc == 0
+      changed_when: false

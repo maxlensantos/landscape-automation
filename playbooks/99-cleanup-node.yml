@@ -1,0 +1,11 @@
+---
+- name: Clean up Juju configuration on a node
+  hosts: ha-node-02
+  gather_facts: no
+  become: no
+
+  tasks:
+    - name: Remove Juju state directory
+      ansible.builtin.file:
+        path: /home/serpro/.local/share/juju
+        state: absent

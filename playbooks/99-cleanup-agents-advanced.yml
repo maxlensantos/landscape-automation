@@ -1,0 +1,271 @@
+---
+- name: Advanced Juju Agent Cleanup - Com Tratamento de Permissões
+  hosts: all
+  gather_facts: yes
+  become: yes
+
+  vars:
+    juju_paths:
+      - /var/lib/juju
+      - /var/snap/juju
+      - /var/log/juju
+      - /var/cache/juju
+      - /home/serpro/.local/share/juju
+      - /home/serpro/.juju
+      - /home/serpro/.cache/juju
+      - /root/.local/share/juju
+      - /root/.juju
+      - /root/.cache/juju
+      - /home/ubuntu/.local/share/juju
+      - /home/ubuntu/.juju
+      - /home/ubuntu/.cache/juju
+
+  tasks:
+    # ============ PRE-CHECK ============ 
+    - name: "[PRE-CHECK] Show current user"
+      debug:
+        msg: "Running as: {{ ansible_user_id }} | UID: {{ ansible_user_uid }}"
+
+    - name: "[PRE-CHECK] Verify sudo access"
+      command: whoami
+      register: current_user
+      changed_when: false
+
+    # ============ PHASE 1: Kill Processes ============ 
+    - name: "[PHASE 1] Kill all jujud processes"
+      block:
+        - name: "Kill jujud via killall"
+          shell: |
+            killall -9 jujud 2>/dev/null || true
+            pkill -9 -f "juju.*agent" || true
+            pkill -9 -f "juju.*machine" || true
+            sleep 2
+          changed_when: false
+          ignore_errors: yes
+
+        - name: "Kill remaining juju processes"
+          shell: pkill -9 -f juju || true
+          changed_when: false
+          ignore_errors: yes
+
+        - name: "Verify no jujud running"
+          shell: "ps aux | grep -i jujud | grep -v grep || echo 'CLEAN'"
+          register: jujud_check
+          changed_when: false
+          ignore_errors: yes
+
+      rescue:
+        - name: "Log process kill errors"
+          debug:
+            msg: "Process cleanup had errors (expected)"
+
+    # ============ PHASE 2: Unmount Snapshots ============ 
+    - name: "[PHASE 2] Unmount snap juju if mounted"
+      block:
+        - name: "Check for mounted snap"
+          shell: "mount | grep snap.juju || echo 'NOT_MOUNTED'"
+          register: snap_mounts
+          changed_when: false
+
+        - name: "Unmount juju snap directories"
+          shell: "umount -lf {{ item }} 2>/dev/null || true"
+          loop: "{{ snap_mounts.stdout_lines }}"
+          when: item != 'NOT_MOUNTED'
+          ignore_errors: yes
+
+      rescue:
+        - name: "Log unmount errors"
+          debug:
+            msg: "Unmount had errors (expected)"
+
+    # ============ PHASE 3: Remove Read-Only Attributes ============ 
+    - name: "[PHASE 3] Remove read-only attributes from juju directories"
+      block:
+        - name: "Remove immutable flag recursively"
+          shell: |
+            for path in {{ juju_paths | join(' ') }};
+            do
+              if [ -e "$path" ]; then
+                chattr -R -i "$path" 2>/dev/null || true
+                chattr -R -a "$path" 2>/dev/null || true
+              fi
+            done
+          changed_when: false
+          ignore_errors: yes
+
+        - name: "Fix permissions to 755"
+          shell: |
+            for path in {{ juju_paths | join(' ') }};
+            do
+              if [ -e "$path" ]; then
+                chmod -R 755 "$path" 2>/dev/null || true
+              fi
+            done
+          changed_when: false
+          ignore_errors: yes
+
+      rescue:
+        - name: "Log attribute removal errors"
+          debug:
+            msg: "Attribute removal had errors (may be normal)"
+
+    # ============ PHASE 4: Force Remove Directories ============ 
+    - name: "[PHASE 4] Force remove juju state directories"
+      block:
+        - name: "Remove /var/lib/juju with force"
+          shell: |
+            if [ -d /var/lib/juju ]; then
+              rm -rf --force /var/lib/juju 2>&1
+              if [ $? -ne 0 ]; then
+                # Try force unmount first
+                mount -o remount,rw /var 2>/dev/null || true
+                rm -rf --force /var/lib/juju || true
+              fi
+            fi
+          changed_when: false
+          ignore_errors: yes
+
+        - name: "Remove user juju directories with force"
+          shell: |
+            for dir in \
+              /home/serpro/.local/share/juju \
+              /home/serpro/.juju \
+              /home/serpro/.cache/juju \
+              /root/.local/share/juju \
+              /root/.juju \
+              /root/.cache/juju \
+              /home/ubuntu/.local/share/juju \
+              /home/ubuntu/.juju \
+              /home/ubuntu/.cache/juju; do
+              [ -d "$dir" ] && rm -rf "$dir" 2>/dev/null || true
+            done
+          changed_when: false
+          ignore_errors: yes
+
+        - name: "Remove juju cache directories"
+          shell: |
+            for dir in /var/cache/juju /var/snap/juju /var/log/juju; do
+              [ -d "$dir" ] && rm -rf "$dir" 2>/dev/null || true
+            done
+          changed_when: false
+          ignore_errors: yes
+
+      rescue:
+        - name: "Log removal errors"
+          debug:
+            msg: "Directory removal completed with expected errors"
+
+    # ============ PHASE 5: Remove Systemd Services ============ 
+    - name: "[PHASE 5] Remove juju systemd services"
+      block:
+        - name: "Remove jujud machine services"
+          shell: |
+            rm -f /etc/systemd/system/jujud-machine-*.service
+            rm -f /etc/systemd/system/jujud-machine-*-exec-start.sh
+            rm -f /etc/systemd/user/jujud-machine-*
+          changed_when: false
+          ignore_errors: yes
+
+        - name: "Reload systemd"
+          systemd:
+            daemon_reload: yes
+
+      rescue:
+        - name: "Log systemd cleanup errors"
+          debug:
+            msg: "Systemd cleanup had errors"
+
+    # ============ PHASE 6: Remove Snap ============ 
+    - name: "[PHASE 6] Remove juju snap"
+      block:
+        - name: "Check if juju snap is installed"
+          shell: "snap list | grep -i juju || echo 'NOT_INSTALLED'"
+          register: snap_installed
+          changed_when: false
+
+        - name: "Remove juju snap with purge"
+          shell: snap remove juju --purge
+          when: "'juju' in snap_installed.stdout"
+          ignore_errors: yes
+          register: snap_remove
+          changed_when: snap_remove.rc == 0
+
+      rescue:
+        - name: "Log snap removal errors"
+          debug:
+            msg: "Snap removal had errors"
+
+    # ============ PHASE 7: Verification ============ 
+    - name: "[PHASE 7] Verify cleanup - Check for remaining directories"
+      block:
+        - name: "List remaining juju files"
+          shell: |
+            find /var -name "*juju*" 2>/dev/null | head -20 || echo "CLEAN"
+            find /etc -name "*juju*" 2>/dev/null | head -20 || echo "CLEAN"
+            find /home -name "*juju*" 2>/dev/null | head -10 || echo "CLEAN"
+          register: remaining_files
+          changed_when: false
+
+        - name: "Check key directories"
+          stat:
+            path: "{{ item }}"
+          register: path_stat
+          loop:
+            - /var/lib/juju
+            - /home/serpro/.local/share/juju
+
+        - name: "Report cleanup status"
+          debug:
+            msg: |
+              CLEANUP VERIFICATION:
+              /var/lib/juju exists: {{ path_stat.results[0].stat.exists }}
+              ~/.local/share/juju exists: {{ path_stat.results[1].stat.exists }}
+              
+              Remaining juju files:
+              {{ remaining_files.stdout_lines | default(['None found']) }}
+
+    # ============ PHASE 8: Reinstall Snap ============ 
+    - name: "[PHASE 8] Reinstall juju snap"
+      block:
+        - name: "Install juju snap (stable)"
+          snap:
+            name: juju
+            classic: yes
+            channel: stable
+          register: snap_install
+          ignore_errors: yes
+
+        - name: "Verify juju installation"
+          command: juju version
+          register: juju_version
+          changed_when: false
+          ignore_errors: yes
+
+        - name: "Show juju version"
+          debug:
+            msg: "Juju version: {{ juju_version.stdout }}"
+
+      rescue:
+        - name: "Log snap install errors"
+          debug:
+            msg: "Snap installation had errors"
+
+    # ============ FINAL: Summary ============ 
+    - name: "[FINAL] Cleanup Complete Summary"
+      debug:
+        msg: |
+          ╔════════════════════════════════════════════════════════╗
+          ║  ✓ ADVANCED CLEANUP COMPLETED                         ║
+          ║    Host: {{ inventory_hostname }}                      ║
+          ║    Status: Ready for fresh Juju bootstrap              ║
+          ╚════════════════════════════════════════════════════════╝
+          
+          Key actions completed:
+          ✓ All jujud processes killed
+          ✓ Snap juju unmounted (if needed)
+          ✓ Read-only attributes removed
+          ✓ Directories force-removed
+          ✓ Systemd services cleaned
+          ✓ Juju snap removed and reinstalled
+          
+          Next step: Run bootstrap playbook

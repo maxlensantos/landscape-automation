@@ -1,0 +1,98 @@
+---
+- name: Apply SSL Configuration to HAProxy
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  become: no
+  gather_facts: no
+
+  vars:
+    controller_name: "prod-controller"
+    model_name: "landscape-prod"
+    cert_dir: "/home/{{ ansible_user }}/juju-ssl-certs"
+    priv_key_path: "{{ cert_dir }}/privkey.pem"
+    cert_path: "{{ cert_dir }}/cert.pem"
+    full_cert_path: "{{ cert_dir }}/fullchain.pem"
+    # Usar o IP do primeiro nó como Common Name. Para produção, use um FQDN.
+    common_name: "{{ hostvars[groups['lxd_hosts'][0]]['ansible_host'] }}"
+    # Constrói dinamicamente a string de Subject Alternative Name (SAN)
+    all_host_ips: "{{ groups['lxd_hosts'] | map('extract', hostvars, 'ansible_host') | list }}"
+    san_string: "{{ (['DNS:' + common_name] + (all_host_ips | map('regex_replace', '^(.*)$', 'IP:\\1') | list)) | join(',') }}"
+
+  tasks:
+    - name: "Verificar se o ssl_cert do haproxy já está configurado"
+      ansible.builtin.command: "juju config haproxy ssl_cert -m {{ controller_name }}:{{ model_name }}"
+      register: haproxy_ssl_check
+      changed_when: false
+      ignore_errors: true
+
+    - name: "Bloco para gerar e aplicar certificado se não estiver configurado"
+      when: "haproxy_ssl_check.stdout == '<juju-no-value>'"
+      block:
+        - name: "Criar diretório para certificados SSL"
+          ansible.builtin.file:
+            path: "{{ cert_dir }}"
+            state: directory
+            mode: '0755'
+
+        - name: "Gerar chave privada (se não existir)"
+          ansible.builtin.command: "openssl genpkey -algorithm RSA -out {{ priv_key_path }} -pkeyopt rsa_keygen_bits:2048"
+          args:
+            creates: "{{ priv_key_path }}"
+
+        - name: "Gerar certificado autoassinado (se não existir)"
+          ansible.builtin.command: >-
+            openssl req -new -x509 -key {{ priv_key_path }} -out {{ cert_path }} -days 365
+            -subj "/CN={{ common_name }}"
+            -addext "subjectAltName = {{ san_string }}"
+          args:
+            creates: "{{ cert_path }}"
+
+        - name: "Combinar chave e certificado para o haproxy"
+          ansible.builtin.shell:
+            cmd: "cat {{ cert_path }} {{ priv_key_path }} > {{ full_cert_path }}"
+          register: combine_result
+          changed_when: combine_result.rc != 0
+
+        - name: "Ler e codificar em Base64 o certificado combinado"
+          ansible.builtin.slurp:
+            src: "{{ full_cert_path }}"
+          register: full_cert_b64
+
+        - name: "Definir a configuração ssl_cert do haproxy"
+          ansible.builtin.command: >-
+            juju config haproxy
+            ssl_cert="{{ full_cert_b64['content'] }}"
+            -m {{ controller_name }}:{{ model_name }}
+          changed_when: true
+          
+    - name: "Log: Certificado SSL já configurado"
+      when: "haproxy_ssl_check.stdout != '<juju-no-value>'"
+      ansible.builtin.debug:
+        msg: "INFO: haproxy:ssl_cert já está configurado. Ignorando."
+
+- name: "Verificar Configuração SSL do HAProxy"
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  become: no
+  gather_facts: no
+  vars:
+    controller_name: "prod-controller"
+    model_name: "landscape-prod"
+  tasks:
+    - name: "Aguardar haproxy ficar ativo após configuração SSL"
+      ansible.builtin.command: "juju status haproxy -m {{ controller_name }}:{{ model_name }} --format=json"
+      register: juju_status
+      changed_when: false
+      # Aguarda até que a aplicação e todas as suas unidades estejam ativas
+      until:
+        - "(juju_status.stdout | from_json)['applications']['haproxy']['application-status']['current'] == 'active'"
+        - "((juju_status.stdout | from_json)['applications']['haproxy']['units'] | dict2items | map(attribute='value.workload-status.current') | select('ne', 'active') | list | length) == 0"
+      retries: 20
+      delay: 15
+
+    - name: "SUCESSO: HAProxy está ativo com SSL. Exibindo status."
+      ansible.builtin.command: "juju status haproxy -m {{ controller_name }}:{{ model_name }}"
+      register: final_status
+      changed_when: false
+
+    - name: "Imprimir status final do haproxy"
+      ansible.builtin.debug:
+        msg: "{{ final_status.stdout_lines }}"

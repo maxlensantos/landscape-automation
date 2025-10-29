@@ -1,0 +1,9 @@
+---
+- name: Destroy Juju controller
+  hosts: localhost
+  gather_facts: no
+  become: no
+
+  tasks:
+    - name: Destroy Juju controller
+      ansible.builtin.command: "juju destroy-controller ha-controller --destroy-all-models --no-prompt"

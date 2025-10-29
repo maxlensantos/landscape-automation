@@ -1,0 +1,175 @@
+---
+- name: "Aggressive Juju Agent Cleanup - Remove ALL State"
+  hosts: "{{ groups['lxd_hosts'] }}"
+  become: yes
+  gather_facts: yes
+
+  tasks:
+
+    # ========================================================================
+    # PHASE 1: KILL ALL JUJU PROCESSES
+    # ========================================================================
+
+    - name: "[CLEANUP] Kill all jujud processes"
+      ansible.builtin.shell: |
+        killall -9 jujud 2>/dev/null || true
+        pkill -9 -f "juju.*agent" || true
+        pkill -9 -f "juju.*machine" || true
+        sleep 2
+      changed_when: false
+      ignore_errors: yes
+
+    - name: "[CLEANUP] Kill any lingering processes"
+      ansible.builtin.command: "pkill -9 -f juju"
+      failed_when: false
+      changed_when: false
+
+    - name: "[CLEANUP] Verify no jujud running"
+      ansible.builtin.shell: "ps aux | grep -i jujud | grep -v grep"
+      register: jujud_check
+      failed_when: false
+      changed_when: false
+
+    - name: "[CLEANUP] Show remaining jujud (if any)"
+      ansible.builtin.debug:
+        msg: "{{ jujud_check.stdout_lines }}"
+      when: jujud_check.stdout != ""
+
+    # ========================================================================
+    # PHASE 2: REMOVE JUJU STATE DIRECTORIES
+    # ========================================================================
+
+    - name: "[CLEANUP] Remove /var/lib/juju completely"
+      ansible.builtin.file:
+        path: /var/lib/juju
+        state: absent
+        force: yes
+
+    - name: "[CLEANUP] Remove juju systemd services"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+        force: yes
+      loop:
+        - "/etc/systemd/system/jujud-machine-*"
+        - "/etc/systemd/system/jujud-machine-*.service"
+        - "/etc/systemd/system/jujud-machine-*-exec-start.sh"
+        - "/etc/systemd/user/jujud-machine-*"
+      ignore_errors: yes
+
+    - name: "[CLEANUP] Reload systemd after service cleanup"
+      ansible.builtin.command: "systemctl daemon-reload"
+      changed_when: false
+
+    # ========================================================================
+    # PHASE 3: REMOVE USER-LEVEL JUJU STATE
+    # ========================================================================
+
+    - name: "[CLEANUP] Remove user juju directories"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+        force: yes
+      loop:
+        - "/home/serpro/.local/share/juju"
+        - "/home/serpro/.juju"
+        - "/root/.local/share/juju"
+        - "/root/.juju"
+        - "/home/ubuntu/.local/share/juju"
+        - "/home/ubuntu/.juju"
+      ignore_errors: yes
+
+    - name: "[CLEANUP] Remove juju cache"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+        force: yes
+      loop:
+        - "/var/cache/juju"
+        - "/home/serpro/.cache/juju"
+        - "/home/ubuntu/.cache/juju"
+      ignore_errors: yes
+
+    # ========================================================================
+    # PHASE 4: REMOVE JUJU PACKAGES (OPTIONAL - ONLY IF SPECIFIED)
+    # ========================================================================
+
+    - name: "[CLEANUP] Purge juju snap"
+      ansible.builtin.shell: "snap remove juju --purge"
+      ignore_errors: yes
+      changed_when: false
+      when: cleanup_packages | default(true)
+
+    # ========================================================================
+    # PHASE 5: VERIFY CLEANUP
+    # ========================================================================
+
+    - name: "[VERIFY] Check for remaining /var/lib/juju"
+      ansible.builtin.stat:
+        path: /var/lib/juju
+      register: juju_var_lib
+
+    - name: "[VERIFY] Check for remaining ~/.local/share/juju"
+      ansible.builtin.stat:
+        path: "/home/serpro/.local/share/juju"
+      register: juju_user_share
+
+    - name: "[VERIFY] Show cleanup results"
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "/var/lib/juju exists: {{ juju_var_lib.stat.exists }}"
+          - "~/.local/share/juju exists: {{ juju_user_share.stat.exists }}"
+          - ""
+          - "✓ All Juju state removed from {{ inventory_hostname }}"
+
+    # ========================================================================
+    # PHASE 6: REINSTALL JUJU (OPTIONAL)
+    # ========================================================================
+
+    - name: "[REINSTALL] Reinstall juju snap"
+      ansible.builtin.snap:
+        name: juju
+        classic: yes
+        state: present
+      when: cleanup_packages | default(true)
+
+    - name: "[REINSTALL] Verify juju version"
+      ansible.builtin.command: "juju version"
+      register: juju_version
+      changed_when: false
+      when: reinstall_juju | default(false)
+
+    - name: "[REINSTALL] Show juju version"
+      ansible.builtin.debug:
+        var: juju_version.stdout
+      when: reinstall_juju | default(false)
+
+    # ========================================================================
+    # PHASE 7: FINAL VERIFICATION
+    # ========================================================================
+
+    - name: "[FINAL] List all juju-related files/dirs remaining"
+      ansible.builtin.shell: |
+        find /var -name "*juju*" 2>/dev/null || true
+        find /etc -name "*juju*" 2>/dev/null || true
+        find /home -name "*juju*" 2>/dev/null || true
+      register: remaining_files
+      changed_when: false
+
+    - name: "[FINAL] Show remaining juju-related files"
+      ansible.builtin.debug:
+        msg: "{{ remaining_files.stdout_lines }}"
+      when: remaining_files.stdout != ""
+
+    - name: "[FINAL] Success - Complete cleanup on {{ inventory_hostname }}"
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "╔═══════════════════════════════════════════╗"
+          - "║  ✓ AGGRESSIVE CLEANUP COMPLETED          ║"
+          - "║    Host: {{ inventory_hostname }}         ║"
+          - "╚═══════════════════════════════════════════╝"
+          - ""
+          - "Ready for fresh Juju bootstrap!"
+          - ""

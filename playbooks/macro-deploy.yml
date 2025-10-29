@@ -1,0 +1,29 @@
+---
+# Playbook Master: Deploy Completo
+
+- name: "PASSO 0a: Diagnostic Checks"
+  import_playbook: 00-diagnostic.yml
+
+- name: "PASSO 0b: Prepare Host Nodes"
+  import_playbook: 00-prepare-host-nodes.yml
+
+- name: "PASSO 0c: Reboot Host to Ensure Clean State"
+  import_playbook: 00-reboot-and-wait.yml
+
+- name: "PASSO 1: Bootstrap Juju Controller"
+  import_playbook: 01-bootstrap-juju-manual.yml
+
+- name: "PASSO 2: Add Second Machine to Model (if HA)"
+  import_playbook: 02-add-machines-manual.yml
+
+- name: "PASSO 3: Deploy Individual Charms"
+  import_playbook: 03-deploy-charms-individual.yml
+
+- name: "PASSO 4: Apply SSL Configuration to HAProxy"
+  import_playbook: 04-apply-ssl-config.yml
+
+- name: "PASSO 5: Create Relations Between Charms"
+  import_playbook: 05-create-relations.yml
+
+- name: "PASSO 6: Final Health Verification"
+  import_playbook: 06-verify-health.yml

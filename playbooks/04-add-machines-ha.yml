@@ -1,0 +1,272 @@
+---
+# ============================================================================
+# playbooks/04-add-machines-ha.yml
+# Adicionar segunda máquina ao modelo Juju (SYNTAX FIXED)
+# ============================================================================
+
+- name: "Add Second Machine to Juju Manual Cloud Model (if HA)"
+  hosts: "{{ groups['lxd_hosts'][0] }}"  # Sempre executa no primeiro host
+  become: no
+  gather_facts: yes
+
+  vars:
+    second_node_user: "{{ hostvars[groups['lxd_hosts'][1]]['ansible_user'] | default('ubuntu') }}"
+    second_node_host: "{{ hostvars[groups['lxd_hosts'][1]]['ansible_host'] }}"
+    second_node_name: "{{ groups['lxd_hosts'][1] }}"
+
+  tasks:
+    # ════════════════════════════════════════════════════════════════════════
+    # MAIN BLOCK WITH ERROR HANDLING
+    # ════════════════════════════════════════════════════════════════════════
+
+    - name: "Add HA Second Machine - Main Block"
+      block:
+
+        # ════════════════════════════════════════════════════════════════════
+        # VERIFICAÇÃO: É HA ou Single Node?
+        # ════════════════════════════════════════════════════════════════════
+
+        - name: "[INFO] Check if this is HA deployment"
+          debug:
+            msg: |
+              Deployment Type Check:
+              - Total LXD hosts: {{ groups['lxd_hosts'] | length }}
+              - is_ha_cluster: {{ is_ha_cluster | default('false') }}
+              
+              {% if groups['lxd_hosts'] | length > 1 %}
+              ✅ HA detected: Will add second machine
+              Second node: {{ second_node_name }} ({{ second_node_host }})
+              {% else %}
+              ℹ️ Single-node deployment: Skipping second machine addition
+              {% endif %}
+
+        # ════════════════════════════════════════════════════════════════════
+        # SKIP IF SINGLE NODE
+        # ════════════════════════════════════════════════════════════════════
+
+        - name: "[SKIP] Skip adding second machine for single-node deployment"
+          debug:
+            msg: "Single-node deployment detected. Skipping machine addition."
+          when: groups['lxd_hosts'] | length == 1
+
+        # ════════════════════════════════════════════════════════════════════
+        # HA DEPLOYMENT: ADD SECOND MACHINE
+        # ════════════════════════════════════════════════════════════════════
+
+        - name: "[HA] Step 1: Verify controller and model exist"
+          block:
+            - name: "List all Juju controllers"
+              shell: |
+                juju controllers --format=json | jq '.controllers | keys'
+              register: controllers_list
+              changed_when: false
+
+            - name: "Display controller list"
+              debug:
+                msg: |
+                  Available controllers:
+                  {{ controllers_list.stdout }}
+
+            - name: "Check if {{ controller_name }} exists"
+              assert:
+                that:
+                  - "'{{ controller_name }}' in controllers_list.stdout"
+                fail_msg: "Controller '{{ controller_name }}' not found. Bootstrap may have failed."
+                success_msg: "Controller '{{ controller_name }}' found ✅"
+
+          when: groups['lxd_hosts'] | length > 1
+
+        - name: "[HA] Step 2: Get list of existing machines in model"
+          block:
+            - name: "Get existing machines"
+              shell: "juju machines -m {{ controller_name }}:{{ model_name }} --format=json | jq -r '.machines | keys | @json' 2>/dev/null || echo '[]'"
+              register: existing_machines_raw
+              changed_when: false
+              check_mode: no
+
+            - name: "Set existing_machines fact"
+              set_fact:
+                existing_machines: "{{ existing_machines_raw.stdout | from_json }}"
+
+            - name: "Display existing machines"
+              debug:
+                msg: |
+                  Existing machines in {{ model_name }}:
+                  {% if existing_machines %}
+                  {{ existing_machines | to_nice_yaml }}
+                  {% else %}
+                  (none - only controller will exist for now)
+                  {% endif %}
+          when: groups['lxd_hosts'] | length > 1
+
+        - name: "[HA] Step 3: Verify second node SSH connectivity"
+          block:
+            - name: "Test SSH to second node"
+              shell: |
+                ssh -o ConnectTimeout=5 -o BatchMode=yes \
+                  {{ second_node_user }}@{{ second_node_host }} \
+                  "echo OK"
+              register: ssh_test
+              retries: 3
+              delay: 5
+              until: ssh_test.rc == 0
+              changed_when: false
+
+            - name: "Display SSH test result"
+              debug:
+                msg: "✅ SSH to {{ second_node_host }} successful"
+
+          when: groups['lxd_hosts'] | length > 1
+
+        - name: "[HA] Step 4: Add second machine to Juju model"
+          block:
+            - name: "Add machine via SSH connection string"
+              shell: |
+                juju add-machine \
+                  -m {{ controller_name }}:{{ model_name }} \
+                  ssh:{{ second_node_user }}@{{ second_node_host }}
+              register: add_machine_result
+              retries: 3
+              delay: 10
+              until: add_machine_result.rc == 0
+              changed_when: true
+
+            - name: "Display add machine result"
+              debug:
+                msg: |
+                  Machine added successfully:
+                  {{ add_machine_result.stdout }}
+
+          when: groups['lxd_hosts'] | length > 1
+
+        - name: "[HA] Step 5: Wait for second machine to be provisioned"
+          block:
+            - name: "Wait for machine-1 to appear in status"
+              shell: |
+                juju status -m {{ controller_name }}:{{ model_name }} \
+                  --format=json | jq '.machines."1".hostname' 2>/dev/null || echo '"waiting"'
+              register: machine_hostname
+              until: machine_hostname.stdout != '"waiting"' and machine_hostname.rc == 0
+              retries: 30
+              delay: 10
+              changed_when: false
+
+            - name: "Display machine status"
+              debug:
+                msg: |
+                  Machine-1 provisioned:
+                  Hostname: {{ machine_hostname.stdout }}
+
+          when: groups['lxd_hosts'] | length > 1
+
+        - name: "[HA] Step 6: Get full status of all machines"
+          block:
+            - name: "Get full machines status"
+              shell: |
+                juju status -m {{ controller_name }}:{{ model_name }} \
+                  --format=json | jq '.machines'
+              register: machines_status
+              changed_when: false
+
+            - name: "Display all machines status"
+              debug:
+                msg: |
+                  All machines in model:
+                  {{ machines_status.stdout | from_json | to_nice_yaml }}
+
+          when: groups['lxd_hosts'] | length > 1
+
+        # ════════════════════════════════════════════════════════════════════
+        # FINAL VALIDATION
+        # ════════════════════════════════════════════════════════════════════
+
+        - name: "[VALIDATE] Verify HA setup is complete"
+          block:
+            - name: "Count machines"
+              shell: |
+                juju status -m {{ controller_name }}:{{ model_name }} \
+                  --format=json | jq '.machines | length'
+              register: machine_count
+              changed_when: false
+
+            - name: "Display final status"
+              debug:
+                msg: |
+                  ✅ HA SETUP COMPLETE
+                  
+                  Machines in model: {{ machine_count.stdout }}
+                  - machine-0 ({{ groups['lxd_hosts'][0] }})
+                  - machine-1 ({{ groups['lxd_hosts'][1] if groups['lxd_hosts'] | length > 1 else 'N/A' }})
+                  
+                  Next step: Deploy Landscape charms
+
+          when: groups['lxd_hosts'] | length > 1
+
+      # ════════════════════════════════════════════════════════════════════════
+      # ERROR HANDLING - INSIDE BLOCK (SYNTAX CORRECT)
+      # ════════════════════════════════════════════════════════════════════════
+
+      rescue:
+        - name: "[ERROR] Capture debug information"
+          block:
+            - name: "Get Juju debug log"
+              shell: |
+                juju debug-log -m {{ controller_name }}:{{ model_name }} \
+                  --replay --tail 50 2>/dev/null || echo "Could not get debug log"
+              register: debug_log
+              failed_when: false
+
+            - name: "Display error details"
+              debug:
+                msg: |
+                  Machine addition failed.
+                  
+                  Debug log:
+                  {{ debug_log.stdout | default('N/A') }}
+                  
+                  Troubleshooting:
+                  1. Verify SSH key installed on second node
+                  2. Check network connectivity: ping {{ second_node_host }}
+                  3. Verify Juju controller is running: juju status
+                  4. Check if second node firewall allows SSH
+                  5. Ensure user {{ second_node_user }} exists on second node
+
+            - name: "[ERROR] Fail playbook with clear message"
+              fail:
+                msg: |
+                  Failed to add second machine.
+                  
+                  Check troubleshooting steps above and retry.
+                  
+                  Or for single-node, that's OK - deployment continues.
+
+      # ════════════════════════════════════════════════════════════════════════
+      # ALWAYS - INSIDE BLOCK (SYNTAX CORRECT)
+      # ════════════════════════════════════════════════════════════════════════
+
+      always:
+        - name: "[FINAL] Save ha-setup status"
+          copy:
+            dest: "/tmp/ha-setup-status.json"
+            content: |
+              {
+                "timestamp": "{{ ansible_date_time.iso8601 }}",
+                "is_ha": {{ (groups['lxd_hosts'] | length > 1) | lower }},
+                "nodes": {{ groups['lxd_hosts'] | length }},
+                "controller": "{{ controller_name }}",
+                "model": "{{ model_name }}"
+              }
+            mode: '0644'
+          failed_when: false
+
+        - name: "[FINAL] Display summary"
+          debug:
+            msg: |
+              {% if groups['lxd_hosts'] | length > 1 %}
+              ✅ HA Configuration Complete
+              - Primary: {{ groups['lxd_hosts'][0] }}
+              - Secondary: {{ groups['lxd_hosts'][1] }}
+              {% else %}
+              ℹ️ Single-Node Configuration
+              - Node: {{ groups['lxd_hosts'][0] }}
+              {% endif %}

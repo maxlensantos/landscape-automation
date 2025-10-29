@@ -1,0 +1,46 @@
+---
+- name: "Debug Juju State"
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  gather_facts: no
+
+  tasks:
+    - name: "[DEBUG] List all registered controllers"
+      ansible.builtin.command: "juju list-controllers --format json"
+      register: controllers
+      changed_when: false
+
+    - name: "[DEBUG] Show controllers"
+      ansible.builtin.debug:
+        msg: "{{ controllers.stdout | from_json }}"
+
+    - name: "[DEBUG] List all clouds"
+      ansible.builtin.command: "juju clouds --format json"
+      register: clouds
+      changed_when: false
+
+    - name: "[DEBUG] Show clouds"
+      ansible.builtin.debug:
+        msg: "{{ clouds.stdout | from_json }}"
+
+    - name: "[DEBUG] Check Juju directories on remote"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: juju_dirs
+      loop:
+        - "/var/lib/juju"
+        - "/home/serpro/.local/share/juju"
+
+    - name: "[DEBUG] Show directory states"
+      ansible.builtin.debug:
+        msg:
+          - "{{ item.item }}: exists={{ item.stat.exists }}"
+      loop: "{{ juju_dirs.results }}"
+
+    - name: "[DEBUG] Check jujud processes"
+      ansible.builtin.shell: "ps aux | grep jujud"
+      register: jujud_procs
+      changed_when: false
+
+    - name: "[DEBUG] Show jujud processes"
+      ansible.builtin.debug:
+        var: jujud_procs.stdout

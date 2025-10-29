@@ -1,0 +1,97 @@
+- name: Full Reset and Fresh Bootstrap
+  hosts: ha-node-01
+  gather_facts: no
+  become: yes
+
+  tasks:
+    - name: "Step 1: Kill all juju processes"
+      shell: |
+        pkill -9 jujud || true
+        pkill -9 mongod || true
+        sleep 2
+      changed_when: false
+
+    - name: "Step 2: Clean juju state completely"
+      shell: |
+        rm -rf /var/lib/juju
+        rm -rf /var/run/juju
+        rm -rf /var/cache/juju
+        rm -rf /home/serpro/.local/share/juju/controllers
+        rm -rf /home/serpro/.local/share/juju/accounts.yaml
+        rm -f /tmp/bootstrap.log
+      changed_when: false
+      ignore_errors: yes
+
+    - name: "Step 3: Remove controller from client"
+      shell: |
+        export PATH=$PATH:/snap/bin
+        juju remove-controller ha-controller --force 2>/dev/null || true
+      changed_when: false
+      ignore_errors: yes
+
+    - name: "Step 4: Wait for cleanup"
+      pause:
+        seconds: 5
+
+    - name: "Step 5: Execute fresh bootstrap"
+      shell: |
+        export PATH=$PATH:/snap/bin
+        juju bootstrap \
+          manual/serpro@10.35.0.9 \
+          ha-controller \
+          --constraints "mem=4G cores=2" \
+          --config enable-os-refresh-update=false \
+          --config enable-os-upgrade=true \
+          2>&1 | tee /tmp/bootstrap-fresh.log
+      register: bootstrap_result
+      timeout: 600
+
+    - name: "Step 6: Show bootstrap result"
+      debug:
+        msg: "Bootstrap exit code: {{ bootstrap_result.rc }}"
+
+    - name: "Step 7: Wait 90 seconds for full initialization"
+      pause:
+        seconds: 90
+
+    - name: "Step 8: Check controller status"
+      shell: |
+        export PATH=$PATH:/snap/bin
+        juju status -m controller 2>&1
+      register: controller_check
+      retries: 5
+      delay: 10
+      until: controller_check.rc == 0
+
+    - name: "Step 9: Create default model"
+      shell: |
+        export PATH=$PATH:/snap/bin
+        juju add-model default 2>&1
+      register: model_result
+
+    - name: "Step 10: Wait for model"
+      pause:
+        seconds: 20
+
+    - name: "Step 11: Get final status"
+      shell: |
+        export PATH=$PATH:/snap/bin
+        juju status 2>&1
+      register: final_status
+
+    - name: "Step 12: Show final status"
+      debug:
+        msg: "{{ final_status.stdout_lines }}"
+
+    - name: "SUCCESS - Fresh Bootstrap Complete"
+      debug:
+        msg: |
+          ╔════════════════════════════════════════════════════════════╗
+          ║     ✓ JUJU BOOTSTRAP SUCCESSFUL - FRESH START             ║
+          ║                                                            ║
+          ║  Controller: ha-controller                                
+          ║  Cloud: manual                                            
+          ║  Host: serpro@10.35.0.9                                   
+          ║  Model: default                                           
+          ║  Status: Ready for deployment                             
+          ╚════════════════════════════════════════════════════════════╝

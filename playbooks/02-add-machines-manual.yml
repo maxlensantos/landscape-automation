@@ -1,0 +1,60 @@
+---
+- name: Add Second Machine to Juju Manual Cloud Model (if HA)
+  hosts: "{{ groups['lxd_hosts'][0] }}" # Run from the controller node
+  become: no
+  gather_facts: yes
+  vars:
+    controller_name: "prod-controller"
+    model_name: "landscape-prod"
+    juju_user: "{{ ansible_user }}"
+
+  tasks:
+    - name: "Log Deployment Type"
+      run_once: true
+      delegate_to: localhost
+      ansible.builtin.debug:
+        msg: "{{ 'INFO: Detectado deploy de nó único.' if (groups['lxd_hosts'] | length) == 1 else 'INFO: Detectado deploy HA. Configurando a segunda máquina.' }}"
+
+    - name: "HA-specific steps: Add and verify second machine"
+      when: (groups['lxd_hosts'] | length) > 1
+      block:
+        - name: "Set second node facts"
+          ansible.builtin.set_fact:
+            second_node_ip: "{{ hostvars[groups['lxd_hosts'][1]]['ansible_host'] | default(groups['lxd_hosts'][1]) }}"
+            second_node_ssh_endpoint: "ssh:{{ juju_user }}@{{ hostvars[groups['lxd_hosts'][1]]['ansible_host'] | default(groups['lxd_hosts'][1]) }}"
+
+        - name: "Block: Add second machine to the model"
+          block:
+            - name: "Check existing machines in model '{{ model_name }}'"
+              ansible.builtin.command: "juju machines -m {{ controller_name }}:{{ model_name }} --format=json"
+              register: juju_machines_before
+              changed_when: false
+              ignore_errors: true
+
+            - name: "Parse existing machines and their IPs"
+              ansible.builtin.set_fact:
+                existing_machine_ips: "{{ (juju_machines_before.stdout | from_json)['machines'] | map(attribute='ip-addresses') | flatten | default([]) if juju_machines_before.rc == 0 and juju_machines_before.stdout != '' else [] }}"
+
+            - name: "Add the second machine ({{ second_node_ip }}) to the model"
+              when: "second_node_ip not in existing_machine_ips"
+              ansible.builtin.command: "juju add-machine {{ second_node_ssh_endpoint }} -m {{ controller_name }}:{{ model_name }}"
+              register: add_machine_result
+              changed_when: "'created machine' in add_machine_result.stdout"
+              retries: 3
+              delay: 15
+          rescue:
+            - name: "ERRO: Failed to add second machine"
+              ansible.builtin.fail:
+                msg: "FALHA: Não foi possível adicionar a segunda máquina ao modelo Juju."
+
+        - name: "Wait for 2 machines to be ready"
+          ansible.builtin.command: >-
+            juju status -m {{ controller_name }}:{{ model_name }} --format=json
+          register: juju_status
+          until:
+            - "(juju_status.stdout | from_json)['machines'] is defined"
+            - "(juju_status.stdout | from_json)['machines'] | length == 2"
+            - "((juju_status.stdout | from_json)['machines'] | map(attribute='juju-status.current') | select('in', ['down', 'pending']) | list | length) == 0"
+          retries: 20
+          delay: 15
+          changed_when: false

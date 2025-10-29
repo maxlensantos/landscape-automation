@@ -1,0 +1,70 @@
+---
+- name: Deploy Landscape Charms Individually
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  become: no
+  gather_facts: yes
+
+  vars:
+    # Determina o canal do postgresql baseado na versão do Ubuntu
+    postgresql_channel: "{{ '16/stable' if ansible_distribution_version == '24.04' else '14/stable' }}"
+    # Define o número de unidades baseado no deploy HA ou nó único
+    num_charm_units: "{{ 2 if (groups['lxd_hosts'] | length) > 1 else 1 }}"
+    
+    charms_to_deploy:
+      - { name: "postgresql", channel: "{{ postgresql_channel }}" }
+      - { name: "rabbitmq-server", channel: "3.9/stable" }
+      - { name: "haproxy", channel: "stable" }
+      - { name: "landscape-server", channel: "stable", app_name: "landscape" }
+
+  tasks:
+    - name: "Obter status atual do Juju para verificar aplicações existentes"
+      ansible.builtin.command: "juju status -m {{ controller_name }}:{{ model_name }} --format=json"
+      register: juju_status_before
+      changed_when: false
+      ignore_errors: true
+
+    - name: "Definir fato para aplicações existentes"
+      ansible.builtin.set_fact:
+        existing_apps: "{{ (juju_status_before.stdout | from_json)['applications'] | list if juju_status_before.rc == 0 and juju_status_before.stdout != '' else [] }}"
+
+    - name: "Log: Aplicações existentes"
+      ansible.builtin.debug:
+        msg: "INFO: Aplicações encontradas: {{ existing_apps }}"
+
+    - name: "Deploy dos charms do Landscape (se não existirem)"
+      ansible.builtin.command: >-
+        juju deploy {{ item.name }} {{ item.app_name | default(item.name) }}
+        --channel {{ item.channel }}
+        --num-units {{ num_charm_units }}
+        -m {{ controller_name }}:{{ model_name }}
+      changed_when: true
+      loop: "{{ charms_to_deploy }}"
+      when: "(item.app_name | default(item.name)) not in existing_apps"
+
+- name: "Verificar Deploy dos Charms"
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  become: no
+  gather_facts: no
+  vars:
+    expected_apps: ["postgresql", "rabbitmq-server", "haproxy", "landscape"]
+  tasks:
+    - name: "Aguardar que todas as aplicações sejam implantadas"
+      ansible.builtin.command: "juju status -m {{ controller_name }}:{{ model_name }} --format=json"
+      register: juju_status
+      changed_when: false
+      # Aguarda até que o número de apps seja o esperado E que todos os nomes esperados estejam na lista
+      until:
+        - "(juju_status.stdout | from_json)['applications'] is defined"
+        - "(juju_status.stdout | from_json)['applications'] | list | length == expected_apps | length"
+        - "(expected_apps | difference((juju_status.stdout | from_json)['applications'] | list)) | length == 0"
+      retries: 30 # Tenta por até 10 minutos
+      delay: 20   # a cada 20 segundos
+
+    - name: "SUCESSO: Exibir status final do Juju"
+      ansible.builtin.command: "juju status -m {{ controller_name }}:{{ model_name }}"
+      register: final_status
+      changed_when: false
+
+    - name: "Imprimir status final"
+      ansible.builtin.debug:
+        msg: "{{ final_status.stdout_lines }}"

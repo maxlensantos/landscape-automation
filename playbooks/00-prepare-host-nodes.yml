@@ -1,126 +1,74 @@
 ---
-- name: Prepare Juju/LXD Host Nodes
+- name: "Prepare Host Nodes for Juju Manual Cloud"
   hosts: lxd_hosts
   become: yes
   gather_facts: yes
 
   tasks:
-    - name: Set default iptables policies to ACCEPT
-      ansible.builtin.command: "{{ item }}"
-      loop:
-        - iptables -P INPUT ACCEPT
-        - iptables -P FORWARD ACCEPT
-        - iptables -P OUTPUT ACCEPT
-        - iptables -F
-        - iptables -X
-        - iptables -t nat -F
-        - iptables -t nat -X
-      changed_when: true
-      failed_when: false
+    - name: "Force Cleanup: Stop services and remove all Juju agent traces from remote host"
+      ansible.builtin.shell: |
+        set -x
+        systemctl stop snap.jujud.daemon.service || true
+        systemctl disable snap.jujud.daemon.service || true
+        systemctl stop jujud-machine-agent.service || true
+        systemctl disable jujud-machine-agent.service || true
+        killall -9 jujud || true
+        rm -rf /var/lib/juju/*
+        rm -rf /etc/juju/*
+      changed_when: false
 
-    - name: Allow all essential traffic
-      ansible.builtin.command: "iptables -A INPUT -p {{ item }} -j ACCEPT"
-      loop:
-        - tcp
-        - udp
-      changed_when: true
-
-    - name: Force inventory refresh
-      ansible.builtin.meta: refresh_inventory
-
-    - name: Update and upgrade apt packages
+    - name: "Update apt cache"
       ansible.builtin.apt:
         update_cache: yes
-        upgrade: "yes"
-        autoremove: yes
+      changed_when: false
 
-    - name: Install essential system packages
+    - name: "Install prerequisite packages"
       ansible.builtin.apt:
         name:
-          - software-properties-common
-          - curl
-          - git
-          - wget
-          - apt-transport-https
-          - ca-certificates
-          - nfs-common
-          - python3-pip # Required for some Ansible modules
+          - python3-pip
+          - snapd
+          - openssl
         state: present
 
-    - name: Ensure LXD is installed and at a consistent state
-      block:
-        - name: Uninstall existing LXD to ensure a clean start
-          ansible.builtin.shell: snap remove --purge lxd
-          ignore_errors: true
+    - name: "Install or refresh the LXD snap to stable channel"
+      ansible.builtin.snap:
+        name: lxd
+        channel: "5.0/stable"
+        state: present
 
-        - name: Install LXD on the 5.0/stable channel
-          ansible.builtin.snap:
-            name: lxd
-            channel: 5.0/stable
+    - name: "Initialize LXD using auto configuration (idempotent)"
+      ansible.builtin.command: lxd init --auto
+      register: lxd_init
+      changed_when: "'LXD has been successfully configured' in lxd_init.stdout"
 
-        - name: Wait for LXD daemon socket to become available
-          ansible.builtin.wait_for:
-            path: /var/snap/lxd/common/lxd/unix.socket
-            state: present
-            delay: 5
-            timeout: 120
-
-        - name: DEBUG - Check LXD status before init
-          ansible.builtin.command: "lxc info"
-          register: lxc_info_output
-          changed_when: false
-          ignore_errors: true
-
-        - name: DEBUG - Display LXD info output
-          ansible.builtin.debug:
-            var: lxc_info_output.stdout
-
-        - name: Initialize LXD with a default storage pool
-          ansible.builtin.command: "lxd init --auto --storage-backend dir"
-
-    - name: Configure LXD default profile for nesting
-      ansible.builtin.command: |
-        /snap/bin/lxc profile edit default
-      args:
-        stdin: "{{ lookup('file', '../lxd_profile_default.yml') }}"
-      register: configure_lxd_profile
-      changed_when: configure_lxd_profile.rc != 0
-
-    - name: Install or update Juju snap
+    - name: "Install the Juju snap with classic confinement"
       ansible.builtin.snap:
         name: juju
         classic: yes
         state: present
 
-    - name: Enable IP forwarding on all hosts
+    - name: "Configure LXD default profile to allow nesting"
+      ansible.builtin.command: lxc profile set default security.nesting true
+      changed_when: false # This command doesn't indicate change, safe to run always
+
+    - name: "Enable IP forwarding for container networking"
       ansible.posix.sysctl:
         name: net.ipv4.ip_forward
         value: '1'
         state: present
-        sysctl_file: /etc/sysctl.d/99-juju-forward.conf
         reload: yes
 
-    - name: Create netplan route configuration on secondary nodes
-      ansible.builtin.copy:
-        dest: /etc/netplan/99-juju-route.yaml
-        content: |
-          network:
-            version: 2
-            ethernets:
-              {{ ansible_default_ipv4.interface }}:
-                routes:
-                  - to: 172.16.0.0/24
-                    via: {{ hostvars[groups['lxd_hosts'][0]]['ansible_host'] }}
-      when: inventory_hostname != groups['lxd_hosts'][0]
+    - name: "!!! LAB ONLY !!! Configure iptables to ACCEPT all forward traffic"
+      ansible.builtin.iptables:
+        chain: FORWARD
+        policy: ACCEPT
+        comment: "Allow all forward traffic for Juju lab environment."
 
-    - name: Apply netplan configuration on secondary nodes
-      ansible.builtin.command: netplan apply
-      when: inventory_hostname != groups['lxd_hosts'][0]
-      changed_when: true
-
-  handlers:
-    - name: Restart lxd service
-      ansible.builtin.systemd:
-        name: snap.lxd.daemon
-        state: restarted
-      listen: "Restart lxd service"
+    - name: "Add current user to the lxd group for permissions"
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: lxd
+        append: yes
+      
+    - name: "Reset SSH connection to apply group changes"
+      ansible.builtin.meta: reset_connection

@@ -1,1 +1,37 @@
 
+# Arquivos de Log
+*.log
+logs/
+log.*
+*.log.*
+
+# Arquivos temporários e de cache do Ansible
+*.retry
+*.pyc
+*.pyo
+__pycache__/
+facts_cache/
+*.vault
+
+# Arquivos de senhas (NUNCA comite senhas)
+vault_pass.txt
+.vault_pass.tmp
+secrets.yml
+vars/secrets.yml
+
+# Certificados e Chaves
+*.pem
+*.key
+*.pfx
+*.crt
+cert/
+
+# Binários e pacotes
+*.deb
+*.tgz
+*.snap
+
+# Arquivos específicos do projeto que parecem ser temporários
+bootstrap-run.log
+bootstrap.log
+landscape_overlay.yaml

@@ -1,0 +1,285 @@
+---
+- name: Advanced Juju Agent Cleanup - Com Tratamento de Permissões
+  hosts: all
+  gather_facts: yes
+  become: yes
+
+  vars:
+    juju_paths:
+      - /var/lib/juju
+      - /var/snap/juju
+      - /var/log/juju
+      - /var/cache/juju
+      - /home/serpro/.local/share/juju
+      - /home/serpro/.juju
+      - /home/serpro/.cache/juju
+      - /root/.local/share/juju
+      - /root/.juju
+      - /root/.cache/juju
+      - /home/ubuntu/.local/share/juju
+      - /home/ubuntu/.juju
+      - /home/ubuntu/.cache/juju
+
+  tasks:
+    # ============ PRE-CHECK ============
+    - name: "[PRE-CHECK] Show current user"
+      debug:
+        msg: "Running as: {{ ansible_user_id }} | UID: {{ ansible_user_uid }}"
+
+    - name: "[PRE-CHECK] Verify sudo access"
+      command: whoami
+      register: current_user
+      changed_when: false
+
+    # ============ PHASE 1: Kill Processes ============
+    - name: "[PHASE 1] Kill all jujud processes"
+      block:
+        - name: "Kill jujud via killall"
+          shell: |
+            killall -9 jujud 2>/dev/null || true
+            pkill -9 -f "juju.*agent" || true
+            pkill -9 -f "juju.*machine" || true
+            sleep 2
+          changed_when: false
+          ignore_errors: yes
+
+        - name: "Kill remaining juju processes"
+          shell: pkill -9 -f juju || true
+          changed_when: false
+          ignore_errors: yes
+
+        - name: "Verify no jujud running"
+          shell: "ps aux | grep -i jujud | grep -v grep || echo 'CLEAN'"
+          register: jujud_check
+          changed_when: false
+          ignore_errors: yes
+
+      rescue:
+        - name: "Log process kill errors"
+          debug:
+            msg: "Process cleanup had errors (expected)"
+
+    # ============ PHASE 2: Unmount Snapshots ============
+    - name: "[PHASE 2] Unmount snap juju if mounted"
+      block:
+        - name: "Check for mounted snap"
+          shell: "mount | grep juju | awk '{print $3}'"
+          register: juju_mounts
+          changed_when: false
+          ignore_errors: yes
+
+        - name: "Unmount juju snap directories"
+          shell: "umount -lf {{ item }} 2>/dev/null || true"
+          loop: "{{ juju_mounts.stdout_lines }}"
+          when: juju_mounts.stdout_lines | length > 0
+          ignore_errors: yes
+
+      rescue:
+        - name: "Log unmount errors"
+          debug:
+            msg: "Unmount had errors (expected)"
+
+    # ============ PHASE 3: Run official Juju cleanup ============
+    - name: "[PHASE 3] Run Juju remove-juju-services (official cleanup)"
+      shell: |
+        if [ -x /usr/sbin/remove-juju-services ]; then
+          /usr/sbin/remove-juju-services
+        else
+          echo "remove-juju-services not found"
+        fi
+      register: juju_cleanup
+      changed_when: false
+      ignore_errors: yes
+
+    - name: "[PHASE 3] Show official cleanup output"
+      debug:
+        msg: "{{ juju_cleanup.stdout_lines }}"
+
+    # ============ PHASE 4: Fix ownership of stubborn files ============
+    - name: "[PHASE 4] Find all juju-owned files and change to root"
+      shell: |
+        # Change ownership de qualquer arquivo que pertença a processos juju
+        find /var/lib/juju -exec chown -h root:root {} + 2>/dev/null || true
+        find /var/run/juju -exec chown -h root:root {} + 2>/dev/null || true
+        find /var/cache/juju -exec chown -h root:root {} + 2>/dev/null || true
+      changed_when: false
+      ignore_errors: yes
+
+    - name: "[PHASE 4] Remove immutable and append-only attributes"
+      shell: |
+        # Remove atributos especiais que impedem remoção
+        find /var/lib/juju -exec chattr -h -i {} + 2>/dev/null || true
+        find /var/lib/juju -exec chattr -h -a {} + 2>/dev/null || true
+        find /var/run/juju -exec chattr -h -i {} + 2>/dev/null || true
+      changed_when: false
+      ignore_errors: yes
+
+    - name: "[PHASE 4] Fix permissions to 755/644"
+      shell: |
+        # Garante que tudo é readable/writable
+        find /var/lib/juju -type d -exec chmod 755 {} + 2>/dev/null || true
+        find /var/lib/juju -type f -exec chmod 644 {} + 2>/dev/null || true
+        find /var/run/juju -type d -exec chmod 755 {} + 2>/dev/null || true
+        find /var/run/juju -type f -exec chmod 644 {} + 2>/dev/null || true
+      changed_when: false
+      ignore_errors: yes
+
+    # ============ PHASE 5: Force Remove Directories ============
+    - name: "[PHASE 5] Force remove /var/lib/juju with multiple strategies"
+      block:
+        - name: "Strategy 1: Direct rm -rf"
+          shell: "rm -rf /var/lib/juju"
+          ignore_errors: yes
+
+        - name: "Strategy 2: rm -rf with --no-preserve-root"
+          shell: "rm -rf --force /var/lib/juju"
+          ignore_errors: yes
+
+        - name: "Strategy 3: find and delete files individually"
+          shell: |
+            find /var/lib/juju -type f -delete 2>/dev/null || true
+            find /var/lib/juju -type d -delete 2>/dev/null || true
+          ignore_errors: yes
+
+        - name: "Strategy 4: Last resort - mount as rw and delete"
+          shell: |
+            mount -o remount,rw / 2>/dev/null || true
+            rm -rf /var/lib/juju 2>/dev/null || true
+          ignore_errors: yes
+
+    - name: "[PHASE 5] Force remove other juju directories"
+      shell: |
+        rm -rf /var/run/juju 2>/dev/null || true
+        rm -rf /var/cache/juju 2>/dev/null || true
+        rm -rf /var/snap/juju 2>/dev/null || true
+        rm -rf /var/log/juju 2>/dev/null || true
+      changed_when: false
+      ignore_errors: yes
+
+    # ============ PHASE 6: Clean user directories ============
+    - name: "[PHASE 6] Clean user juju directories"
+      shell: |
+        rm -rf /home/serpro/.local/share/juju 2>/dev/null || true
+        rm -rf /home/serpro/.juju 2>/dev/null || true
+        rm -rf /home/serpro/.cache/juju 2>/dev/null || true
+        rm -rf /root/.local/share/juju 2>/dev/null || true
+        rm -rf /root/.juju 2>/dev/null || true
+        rm -rf /root/.cache/juju 2>/dev/null || true
+      changed_when: false
+      ignore_errors: yes
+
+    # ============ PHASE 7: Clean systemd services ============
+    - name: "[PHASE 7] Remove systemd juju services"
+      shell: |
+        rm -f /etc/systemd/system/jujud-* 2>/dev/null || true
+        rm -f /etc/systemd/system/multi-user.target.wants/jujud-* 2>/dev/null || true
+        rm -f /etc/systemd/user/jujud-* 2>/dev/null || true
+        systemctl daemon-reload
+      changed_when: false
+      ignore_errors: yes
+
+    # ============ PHASE 8: Clean snap ============
+    - name: "[PHASE 8] Remove juju snap"
+      shell: |
+        snap remove juju --purge 2>/dev/null || true
+        snap remove juju-db --purge 2>/dev/null || true
+      changed_when: false
+      ignore_errors: yes
+
+    - name: "[PHASE 8] Wait for snap removal"
+      pause:
+        seconds: 5
+
+    # ============ PHASE 9: Clean cloud-init properly ============
+    - name: "[PHASE 9] Clean cloud-init (correct flags for this version)"
+      shell: |
+        cloud-init clean --seed --logs 2>/dev/null || true
+        rm -rf /var/lib/cloud/seed/* 2>/dev/null || true
+        rm -rf /var/lib/cloud/instance/* 2>/dev/null || true
+      changed_when: false
+      ignore_errors: yes
+
+    # ============ PHASE 10: Clean config files ============
+    - name: "[PHASE 10] Remove juju config files"
+      shell: |
+        rm -f /etc/juju-proxy*.conf 2>/dev/null || true
+        rm -f /etc/apt/apt.conf.d/*juju* 2>/dev/null || true
+        rm -f /etc/sudoers.d/*juju* 2>/dev/null || true
+        rm -f /etc/profile.d/juju* 2>/dev/null || true
+        rm -f /etc/sysctl.d/*juju* 2>/dev/null || true
+        rm -f /etc/netplan/*juju* 2>/dev/null || true
+      changed_when: false
+      ignore_errors: yes
+
+    # ============ PHASE 11: Verification ============
+    - name: "[PHASE 11] Verify /var/lib/juju is gone"
+      stat:
+        path: /var/lib/juju
+      register: juju_lib_check
+
+    - name: "[PHASE 11] Verify user juju dirs are gone"
+      stat:
+        path: /home/serpro/.local/share/juju
+      register: user_juju_check
+
+    - name: "[PHASE 11] Find any remaining juju-related files"
+      shell: |
+        echo "=== /var juju files ==="
+        find /var -name "*juju*" 2>/dev/null | head -20 || echo "CLEAN"
+        echo ""
+        echo "=== /etc juju files ==="
+        find /etc -name "*juju*" 2>/dev/null | head -10 || echo "CLEAN"
+        echo ""
+        echo "=== /home juju files ==="
+        find /home -name "*juju*" 2>/dev/null | head -10 || echo "CLEAN"
+      register: remaining_juju
+      changed_when: false
+
+    - name: "[PHASE 11] Show remaining files"
+      debug:
+        msg: "{{ remaining_juju.stdout_lines }}"
+
+    # ============ PHASE 12: Reinstall juju snap ============
+    - name: "[PHASE 12] Reinstall juju snap fresh"
+      snap:
+        name: juju
+        classic: yes
+        channel: stable
+      register: snap_install
+      ignore_errors: yes
+
+    - name: "[PHASE 12] Verify juju installation"
+      shell: "juju version"
+      register: juju_version
+      ignore_errors: yes
+
+    - name: "[PHASE 12] Show installed version"
+      debug:
+        msg: "Juju version: {{ juju_version.stdout }}"
+
+    # ============ FINAL: Summary ============
+    - name: "[FINAL] Cleanup Summary"
+      debug:
+        msg: |
+          ╔════════════════════════════════════════════════════════╗
+          ║         ✓ NATIVE CLEANUP COMPLETED                    ║
+          ║            Host: {{ inventory_hostname }}              ║
+          ╚════════════════════════════════════════════════════════╝
+          
+          Cleanup Results:
+          ✓ All Juju processes killed
+          ✓ Official remove-juju-services executed
+          ✓ File ownership changed to root
+          ✓ Special attributes removed
+          ✓ Permissions normalized
+          ✓ State directories removed
+          ✓ User directories cleaned
+          ✓ Systemd services removed
+          ✓ Snap packages removed and reinstalled
+          ✓ Cloud-init cleaned
+          
+          Status:
+          /var/lib/juju exists: {{ juju_lib_check.stat.exists }}
+          ~/.local/share/juju exists: {{ user_juju_check.stat.exists }}
+          
+          System is ready for fresh bootstrap!

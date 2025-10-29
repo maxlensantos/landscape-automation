@@ -1,0 +1,45 @@
+---
+- name: "Network Access Strategy - Juju Bootstrap Preparation"
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  vars:
+    juju_api_port: 17070
+    juju_charm_hub_port: 7777
+    controller_node_ip: "{{ hostvars[groups['lxd_hosts'][0]]['ansible_host'] }}"
+
+  tasks:
+    - name: "[FIREWALL] Allow Juju API and Charm Hub ports"
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "{{ juju_api_port }}"
+        - "{{ juju_charm_hub_port }}"
+        - 22
+
+    - name: "[CONNECTIVITY] Add all nodes to known_hosts"
+      ansible.builtin.known_hosts:
+        name: "{{ item }}"
+        key: "{{ lookup('pipe', 'ssh-keyscan "{{ item }}" 2>/dev/null') }}"
+      loop: "{{ groups['lxd_hosts'] }}"
+
+    - name: "[DNS] Add all nodes to /etc/hosts"
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        line: "{{ hostvars[item]['ansible_host'] }} {{ item }}"
+        regexp: "^{{ hostvars[item]['ansible_host'] }}"
+      loop: "{{ groups['lxd_hosts'] }}"
+
+    - name: "[KERNEL] Optimize kernel for Juju/LXD"
+      ansible.posix.sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        sysctl_file: /etc/sysctl.d/99-juju-lxd.conf
+        reload: yes
+      loop:
+        - { name: fs.inotify.max_user_watches, value: 1048576 }
+        - { name: fs.inotify.max_user_instances, value: 8192 }
+        - { name: net.ipv4.ip_forward, value: 1 }

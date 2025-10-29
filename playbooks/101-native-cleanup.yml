@@ -1,0 +1,15 @@
+---
+- hosts: "{{ groups['lxd_hosts'][0] }}"
+  become: yes
+  tasks:
+    - name: Run Juju remove-juju-services
+      command: /usr/sbin/remove-juju-services
+      failed_when: false
+    
+    - name: Clean cloud-init
+      shell: cloud-init clean --seed --logs --allow-dataloss
+      failed_when: false
+    
+    - name: Wait for stabilization
+      pause:
+        seconds: 10

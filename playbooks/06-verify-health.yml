@@ -1,0 +1,56 @@
+---
+- name: Final Health Verification of Landscape Deployment
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  become: no
+  gather_facts: no
+
+  vars:
+    controller_name: "prod-controller"
+    model_name: "landscape-prod"
+
+  tasks:
+    - name: "Obter status final do Juju"
+      ansible.builtin.command: "juju status -m {{ controller_name }}:{{ model_name }} --format=json"
+      register: juju_status
+      changed_when: false
+
+    - name: "Garantir que todas as aplicações estão ativas"
+      ansible.builtin.assert:
+        that:
+          - "((juju_status.stdout | from_json)['applications'] | dict2items | map(attribute='value.application-status.current') | select('ne', 'active') | list | length) == 0"
+        fail_msg: "FALHA: Nem todas as aplicações estão no estado 'active'. Verifique o 'juju status'."
+        success_msg: "SUCESSO: Todas as aplicações estão no estado 'active'."
+
+    - name: "Garantir que todas as unidades estão ativas"
+      ansible.builtin.assert:
+        that:
+          - "((juju_status.stdout | from_json)['applications'] | dict2items | map(attribute='value.units') | select('ne', 'none') | list | flatten | map(attribute='workload-status.current') | select('ne', 'active') | list | length) == 0"
+        fail_msg: "FALHA: Nem todas as unidades estão no estado 'active'. Verifique o 'juju status'."
+        success_msg: "SUCESSO: Todas as unidades estão no estado 'active'."
+
+    - name: "Obter endereço público do HAProxy"
+      ansible.builtin.set_fact:
+        # Obtém o public-address da primeira unidade do haproxy encontrada
+        haproxy_ip: "{{ ( (juju_status.stdout | from_json)['applications']['haproxy']['units'] | dict2items )[0].value['public-address'] }}"
+
+    - name: "Log do IP do HAProxy a ser verificado"
+      ansible.builtin.debug:
+        msg: "INFO: Verificando a acessibilidade do Landscape em https://{{ haproxy_ip }}/"
+
+    - name: "Verificar se a UI do Landscape está acessível via HAProxy"
+      ansible.builtin.uri:
+        url: "https://{{ haproxy_ip }}/"
+        method: GET
+        validate_certs: no # Necessário para certificados autoassinados
+        return_content: yes
+      register: landscape_ui_check
+      until: "landscape_ui_check.status == 200 and 'Landscape' in landscape_ui_check.content"
+      retries: 10
+      delay: 15
+      
+    - name: "SUCESSO FINAL: O deploy do Landscape HA está saudável e acessível!"
+      ansible.builtin.debug:
+        msg:
+          - "O deploy do Landscape em modo HA foi concluído com sucesso."
+          - "Acesse a interface web em: https://{{ haproxy_ip }}/"
+          - "Lembre-se de aceitar o certificado autoassinado no seu navegador."

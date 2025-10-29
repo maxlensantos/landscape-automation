@@ -1,0 +1,217 @@
+---
+- name: Production Juju Bootstrap - Post Cleanup
+  hosts: ha-node-01
+  gather_facts: yes
+  
+  vars:
+    bootstrap_timeout: 600
+    model_name: "default"
+    controller_name: "ha-controller"
+    
+  tasks:
+    # ============ PRE-BOOTSTRAP CHECKS ============ 
+    - name: "PRE-CHECK Wait for system to stabilize after cleanup"
+      pause:
+        seconds: 10
+
+    - name: "PRE-CHECK Verify juju snap installed"
+      snap:
+        name: juju
+        state: present
+      register: juju_snap
+
+    - name: "PRE-CHECK Get juju version"
+      shell: "/snap/bin/juju version 2>/dev/null || juju version"
+      register: juju_ver
+      changed_when: false
+      ignore_errors: yes
+
+    - name: "PRE-CHECK Show Juju version"
+      debug:
+        msg: "Juju version installed"
+
+    - name: "PRE-CHECK Verify network connectivity"
+      wait_for:
+        host: 10.35.0.9
+        port: 22
+        timeout: 30
+      register: network_check
+
+    - name: "PRE-CHECK Verify SSH key exists"
+      stat:
+        path: /home/serpro/.ssh/id_rsa
+      register: ssh_key
+
+    - name: "PRE-CHECK Verify LXD is running"
+      command: lxc list
+      register: lxd_check
+      changed_when: false
+
+    - name: "PRE-CHECK Display LXD status"
+      debug:
+        msg: "LXD is running and accessible"
+
+    # ============ PHASE 1: Clean any remaining LXD containers ============ 
+    - name: "PHASE 1 Delete existing containers if any"
+      shell: |
+        containers=$(lxc list --format json 2>/dev/null | jq -r '.[].name' 2>/dev/null || echo "")
+        if [ -n "$containers" ]; then
+          echo "$containers" | while read container; do
+            lxc delete "$container" -f 2>/dev/null || true
+          done
+        fi
+      ignore_errors: yes
+
+    - name: "PHASE 1 Wait for LXD cleanup"
+      pause:
+        seconds: 5
+
+    # ============ PHASE 2: Prepare Cloud Configuration ============ 
+    - name: "PHASE 2 Create manual-cloud.yaml"
+      copy:
+        dest: /home/serpro/manual-cloud.yaml
+        owner: serpro
+        group: serpro
+        mode: '0600'
+        content: |
+          clouds:
+            on-premise-manual:
+              type: manual
+              regions:
+                default: {}
+
+    - name: "PHASE 2 Verify cloud file created"
+      stat:
+        path: /home/serpro/manual-cloud.yaml
+      register: cloud_stat
+
+    # ============ PHASE 3: Register Cloud ============ 
+    - name: "PHASE 3 Register on-premise-manual cloud"
+      shell: |
+        export PATH=$PATH:/snap/bin
+        juju add-cloud on-premise-manual /home/serpro/manual-cloud.yaml --client 2>&1
+      register: add_cloud
+      retries: 3
+      delay: 5
+      until: add_cloud.rc == 0
+      ignore_errors: yes
+
+    - name: "PHASE 3 Show cloud registration"
+      debug:
+        msg: "Cloud registered successfully"
+
+    # ============ PHASE 4: Bootstrap Controller ============ 
+    - name: "PHASE 4 Execute Juju bootstrap"
+      shell: |
+        export PATH=$PATH:/snap/bin
+        set -e
+        
+        echo "Starting bootstrap at $(date)"
+        juju bootstrap \
+          on-premise-manual/default \
+          {{ controller_name }} \
+          --constraints "mem=4G cores=2" \
+          --config enable-os-refresh-update=false \
+          --config enable-os-upgrade=true \
+          --verbose 2>&1 | tee /tmp/juju-bootstrap.log
+        
+        echo "Bootstrap completed at $(date)"
+      register: bootstrap_exec
+      timeout: 600
+      ignore_errors: yes
+
+    - name: "PHASE 4 Display bootstrap status"
+      debug:
+        msg: "Bootstrap process completed"
+
+    - name: "PHASE 4 Fail if bootstrap failed"
+      fail:
+        msg: "Bootstrap failed with return code {{ bootstrap_exec.rc }}"
+      when: bootstrap_exec.rc != 0
+
+    # ============ PHASE 5: Wait for Controller Ready ============ 
+    - name: "PHASE 5 Wait for controller to initialize"
+      pause:
+        seconds: 60
+
+    - name: "PHASE 5 Verify controller is accessible"
+      shell: |
+        export PATH=$PATH:/snap/bin
+        juju status -m controller 2>&1
+      register: controller_status
+      retries: 10
+      delay: 10
+      until: controller_status.rc == 0
+
+    - name: "PHASE 5 Show controller ready"
+      debug:
+        msg: "Controller is ready and responsive"
+
+    # ============ PHASE 6: Create Default Model ============ 
+    - name: "PHASE 6 Create default model"
+      shell: |
+        export PATH=$PATH:/snap/bin
+        juju add-model {{ model_name }} 2>&1
+      register: add_model
+      retries: 3
+      delay: 5
+      until: add_model.rc == 0
+      ignore_errors: yes
+
+    - name: "PHASE 6 Wait for model initialization"
+      pause:
+        seconds: 15
+
+    - name: "PHASE 6 Verify model creation"
+      shell:
+        export PATH=$PATH:/snap/bin
+        juju models 2>&1
+      register: models_list
+      changed_when: false
+
+    - name: "PHASE 6 Show available models"
+      debug:
+        msg: "Default model created successfully"
+
+    # ============ PHASE 7: Full System Verification ============ 
+    - name: "PHASE 7 Get full system status"
+      shell:
+        export PATH=$PATH:/snap/bin
+        juju status 2>&1
+      register: full_status
+      changed_when: false
+
+    - name: "PHASE 7 Show full status output"
+      debug:
+        msg: "System status retrieved successfully"
+
+    - name: "PHASE 7 Get controllers list"
+      shell:
+        export PATH=$PATH:/snap/bin
+        juju controllers 2>&1
+      register: controllers_list
+      changed_when: false
+
+    - name: "PHASE 7 Show controllers info"
+      debug:
+        msg: "Controllers information retrieved"
+
+    # ============ FINAL: Success Summary ============ 
+    - name: "FINAL Bootstrap Success Summary"
+      debug:
+        msg: |
+          ╔══════════════════════════════════════════════════════════╗
+          ║     ✓ JUJU BOOTSTRAP COMPLETED SUCCESSFULLY            ║
+          ║        Host: {{ inventory_hostname }}                    ║
+          ║        Controller: {{ controller_name }}                 ║
+          ║        Model: {{ model_name }}                           ║
+          ╚══════════════════════════════════════════════════════════╝
+          
+          System is ready for deployment!
+          
+          Next steps:
+          1. Deploy applications: juju deploy <charm-name>
+          2. Add more machines: juju add-machine
+          3. Scale applications: juju add-unit <application>
+          4. Check logs: tail -f /tmp/juju-bootstrap.log
+          5. Monitor status: juju status

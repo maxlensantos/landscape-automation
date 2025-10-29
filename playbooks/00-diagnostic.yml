@@ -1,0 +1,56 @@
+---
+- name: "Pre-flight Diagnostic Checks for Landscape Deployment"
+  hosts: lxd_hosts
+  become: no
+  gather_facts: yes
+
+  vars:
+    min_ram_mb: 7800 # 8GB, com uma pequena tolerância
+    min_disk_gb: 70  # REQUISITO REDUZIDO PARA TESTE DE HOMOLOGAÇÃO
+    # Códigos de cor ANSI
+    color_green: "\033[92m"
+    color_red: "\033[91m"
+    color_yellow: "\033[93m"
+    color_end: "\033[0m"
+
+  tasks:
+    - name: "Executar checagens de diagnóstico"
+      block:
+        - name: "1. Checar Versão do Ubuntu"
+          ansible.builtin.assert:
+            that: ansible_distribution_version in ['22.04', '24.04']
+            fail_msg: "{{ color_red }}FALHA: Host {{ inventory_hostname }} não é Ubuntu 22.04 ou 24.04. Versão encontrada: {{ ansible_distribution_version }}{{ color_end }}"
+            success_msg: "{{ color_green }}PASS: Host {{ inventory_hostname }} está executando uma versão compatível do Ubuntu ({{ ansible_distribution_version }}).{{ color_end }}"
+
+        - name: "2. Checar disponibilidade de RAM"
+          ansible.builtin.assert:
+            that: ansible_memtotal_mb >= min_ram_mb
+            fail_msg: "{{ color_red }}FALHA: Host {{ inventory_hostname }} tem menos de {{ min_ram_mb }}MB de RAM. Encontrado: {{ ansible_memtotal_mb }}MB.{{ color_end }}"
+            success_msg: "{{ color_green }}PASS: Host {{ inventory_hostname }} tem RAM suficiente ({{ ansible_memtotal_mb }}MB).{{ color_end }}"
+
+        - name: "3. Checar Espaço em Disco em /"
+          vars:
+            root_fs: "{{ ansible_mounts | selectattr('mount', 'equalto', '/') | first }}"
+          ansible.builtin.assert:
+            that: (root_fs.size_available / (1024*1024*1024)) >= min_disk_gb
+            fail_msg: "{{ color_red }}FALHA: Host {{ inventory_hostname }} tem menos de {{ min_disk_gb }}GB livres em /. Encontrado: {{ (root_fs.size_available / (1024*1024*1024)) | round(1) }}GB.{{ color_end }}"
+            success_msg: "{{ color_green }}PASS: Host {{ inventory_hostname }} tem espaço em disco suficiente ({{ (root_fs.size_available / (1024*1024*1024)) | round(1) }}GB livres em /).{{ color_end }}"
+
+        - name: "4. Checar conectividade SSH entre hosts (se HA)"
+          when: (groups['lxd_hosts'] | length) > 1
+          vars:
+            other_host: "{{ (groups['lxd_hosts'] | difference([inventory_hostname]))[0] }}"
+          ansible.builtin.shell: "ping -c 1 {{ hostvars[other_host]['ansible_host'] | default(other_host) }}"
+          changed_when: false
+          register: ping_check
+          failed_when: ping_check.rc != 0
+        
+        - name: "Log de sucesso para checagem de SSH (se HA)"
+          when: (groups['lxd_hosts'] | length) > 1
+          ansible.builtin.debug:
+            msg: "{{ color_green }}PASS: Host {{ inventory_hostname }} consegue pingar o outro host.{{ color_end }}"
+
+      rescue:
+        - name: "Uma checagem de diagnóstico falhou"
+          ansible.builtin.fail:
+            msg: "{{ color_red }}FATAL: Uma ou mais checagens de diagnóstico falharam no host {{ inventory_hostname }}. Por favor, revise os logs.{{ color_end }}"

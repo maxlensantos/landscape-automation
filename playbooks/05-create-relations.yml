@@ -1,0 +1,72 @@
+---
+- name: Create Juju Relations for Landscape
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  become: no
+  gather_facts: no
+
+  vars:
+    controller_name: "prod-controller"
+    model_name: "landscape-prod"
+    # Lista de relações a serem criadas. O nome da aplicação para landscape-server é 'landscape'.
+    relations_to_create:
+      - { app1: "landscape", app2: "postgresql" }
+      - { app1: "landscape", app2: "rabbitmq-server" }
+      - { app1: "landscape", app2: "haproxy" }
+
+  tasks:
+    - name: "Obter relações existentes"
+      ansible.builtin.command: "juju status -m {{ controller_name }}:{{ model_name }} --format=json"
+      register: juju_status_before
+      changed_when: false
+      ignore_errors: true
+
+    - name: "Analisar relações existentes em uma lista simples"
+      ansible.builtin.set_fact:
+        existing_relations: "{{ (juju_status_before.stdout | from_json)['relations'] | map(attribute='endpoints') | map('map', attribute='application') | map('sort') | map('join', ':') | list if juju_status_before.rc == 0 and (juju_status_before.stdout | from_json).relations is defined else [] }}"
+
+    - name: "Log: Relações existentes"
+      ansible.builtin.debug:
+        msg: "INFO: Relações encontradas: {{ existing_relations }}"
+
+    - name: "Criar relações necessárias entre os charms"
+      ansible.builtin.command: >-
+        juju relate {{ item.app1 }} {{ item.app2 }}
+        -m {{ controller_name }}:{{ model_name }}
+      changed_when: true
+      loop: "{{ relations_to_create }}"
+      loop_control:
+        loop_var: item
+      vars:
+        relation_key: "{{ [item.app1, item.app2] | sort | join(':') }}"
+      when: "relation_key not in existing_relations"
+
+- name: "Verificar Estabilidade do Modelo Após Relações"
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  become: no
+  gather_facts: no
+  vars:
+    controller_name: "prod-controller"
+    model_name: "landscape-prod"
+  tasks:
+    - name: "Aguardar todas as aplicações ficarem ativas e ociosas"
+      ansible.builtin.command: "juju status -m {{ controller_name }}:{{ model_name }} --format=json"
+      register: juju_status
+      changed_when: false
+      # Condição complexa: verifica se cada app está ativo e cada unidade está ativa/ociosa.
+      until:
+        - "(juju_status.stdout | from_json)['applications'] is defined"
+        # Verifica se todas as aplicações estão ativas
+        - "((juju_status.stdout | from_json)['applications'] | dict2items | map(attribute='value.application-status.current') | select('ne', 'active') | list | length) == 0"
+        # Verifica se todas as unidades estão ativas
+        - "((juju_status.stdout | from_json)['applications'] | dict2items | map(attribute='value.units') | select('ne', 'none') | list | flatten | map(attribute='workload-status.current') | select('ne', 'active') | list | length) == 0"
+      retries: 60 # Espera por até 20 minutos
+      delay: 20
+      
+    - name: "SUCESSO: Modelo está estável. Exibindo status final."
+      ansible.builtin.command: "juju status -m {{ controller_name }}:{{ model_name }}"
+      register: final_status
+      changed_when: false
+
+    - name: "Imprimir status final do modelo"
+      ansible.builtin.debug:
+        msg: "{{ final_status.stdout_lines }}"

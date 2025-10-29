@@ -1,0 +1,56 @@
+---
+- hosts: "{{ groups['lxd_hosts'][0] }}"
+  become: yes
+  tasks:
+    - name: Stop LXD
+      command: snap stop lxd
+      failed_when: false
+      
+    - name: Remove all LXD state
+      file:
+        path: "{{ item }}"
+        state: absent
+        force: yes
+      loop:
+        - /var/lib/lxd
+        - /var/snap/lxd
+        - /var/cache/lxd
+        - /var/log/lxd
+        - /snap/lxd
+        - /root/.config/lxc
+        - /root/.local/share/lxc
+      ignore_errors: yes
+    
+    - name: Remove snap lxd
+      snap:
+        name: lxd
+        state: absent
+      ignore_errors: yes
+      
+    - name: Wait 10 seconds
+      pause:
+        seconds: 10
+        
+    - name: Install fresh LXD
+      snap:
+        name: lxd
+        classic: yes
+        state: present
+        
+    - name: Initialize LXD
+      command: lxd init --auto
+      failed_when: false
+      
+    - name: Wait for LXD
+      pause:
+        seconds: 15
+        
+    - name: Verify LXD
+      command: lxc list
+      register: result
+      retries: 3
+      delay: 5
+      until: result.rc == 0
+      
+    - debug:
+        msg: "✓ LXD fresh install complete"

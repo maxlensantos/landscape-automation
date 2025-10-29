@@ -1,0 +1,107 @@
+---
+- name: "Reset LXD Daemon State - Complete Reset"
+  hosts: "{{ groups['lxd_hosts'][0] }}"
+  become: yes
+  gather_facts: yes
+
+  tasks:
+
+    # ========================================================================
+    # PHASE 1: STOP LXD AND ALL CONTAINERS
+    # ========================================================================
+
+    - name: "[PHASE 1] Stop LXD daemon"
+      ansible.builtin.systemd:
+        name: lxd
+        state: stopped
+        daemon_reload: yes
+      failed_when: false
+
+    - name: "[PHASE 1] Stop snap.lxd services"
+      ansible.builtin.command: "snap stop lxd"
+      failed_when: false
+      changed_when: false
+
+    - name: "[PHASE 1] Wait for LXD to stop"
+      ansible.builtin.pause:
+        seconds: 5
+
+    # ========================================================================
+    # PHASE 2: CLEAR LXD STATE
+    # ========================================================================
+
+    - name: "[PHASE 2] Remove LXD database state"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+        force: yes
+      loop:
+        - "/var/lib/lxd/database"
+        - "/var/lib/lxd/containers.db"
+        - "/var/lib/lxd/cluster"
+      ignore_errors: yes
+
+    - name: "[PHASE 2] Reset LXD cache"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+        force: yes
+      loop:
+        - "/var/cache/lxd"
+        - "/var/lib/lxd/cache"
+      ignore_errors: yes
+
+    - name: "[PHASE 2] Clear LXD logs"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+        force: yes
+      loop:
+        - "/var/log/lxd"
+        - "/var/snap/lxd/common/lxd.log"
+      ignore_errors: yes
+
+    # ========================================================================
+    # PHASE 3: RESTART LXD
+    # ========================================================================
+
+    - name: "[PHASE 3] Start LXD daemon via Snap"
+      ansible.builtin.command: "snap start lxd"
+      changed_when: false
+
+    - name: "[PHASE 3] Wait for LXD to initialize"
+      ansible.builtin.pause:
+        seconds: 10
+
+    # ========================================================================
+    # PHASE 4: VERIFY LXD RESET
+    # ========================================================================
+
+    - name: "[PHASE 4] Verify LXD is running"
+      ansible.builtin.command: "lxc list"
+      register: lxd_verify
+      retries: 3
+      delay: 5
+      until: lxd_verify.rc == 0
+
+    - name: "[PHASE 4] Show LXD status"
+      ansible.builtin.debug:
+        msg:
+          - "LXD is running"
+          - "Containers: {{ lxd_verify.stdout }}"
+
+    - name: "[PHASE 4] Initialize LXD (if needed)"
+      ansible.builtin.command: "lxd init --auto"
+      failed_when: false
+      changed_when: false
+
+    - name: "[PHASE 4] Verify reset"
+      ansible.builtin.command: "lxc list --format json"
+      register: lxd_final
+      changed_when: false
+
+    - name: "[PHASE 4] Show final LXD state"
+      ansible.builtin.debug:
+        msg:
+          - "LXD containers: {{ (lxd_final.stdout | from_json) | length }}"
+          - "✓ LXD reset complete"
