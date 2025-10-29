@@ -40,74 +40,46 @@
         seconds: 5
 
   tasks:
-        # ============================================
-        # 1. KILL ALL JUJU PROCESSES (Força Bruta)
-        # ============================================
-        - name: 🔴 PASSO 1 - Kill ALL Juju Processes (Aggressive)
-          block:
-            - name: Aggressively kill jujud, juju, and mongod processes
-              shell: |
-                sudo pkill -9 jujud juju mongod 2>/dev/null || true
-                sleep 2
-              changed_when: true
-              ignore_errors: true
-    
-            - name: Remove juju and juju-db snap packages
-              shell: |
-                sudo snap remove juju --purge 2>/dev/null || true
-                sudo snap remove juju-db --purge 2>/dev/null || true
-                sleep 5
-              changed_when: true
-              ignore_errors: true
-    
-            - name: Remove juju data directories
-              shell: |
-                sudo rm -rf /var/lib/juju /var/run/juju /var/cache/juju /var/snap/juju* 2>/dev/null || true
-                rm -rf ~/.local/share/juju ~/.juju ~/.cache/juju 2>/dev/null || true
-              changed_when: true
-              ignore_errors: true
-    
-            - name: Verify no jujud processes are running after aggressive kill
-              shell: |
-                if pgrep -f jujud > /dev/null; then
-                  echo "❌ ERRO: jujud ainda está rodando após pkill!"
-                  ps aux | grep jujud
-                  exit 1
-                fi
-                echo "✓ Nenhum processo jujud rodando"
-              changed_when: false
-        - name: Kill mongod processes
+    # ============================================
+    # 1. KILL ALL JUJU PROCESSES (Força Bruta)
+    # ============================================
+    - name: 🔴 PASSO 1 - Kill ALL Juju Processes (Aggressive)
+      block:
+        - name: Aggressively kill jujud, juju, and mongod processes
           shell: |
-            killall -9 mongod 2>/dev/null || true
-            sleep 1
-            ps aux | grep mongod | grep -v grep || echo "✓ mongod killado"
-          changed_when: false
-          ignore_errors: true
-
-        - name: Kill etcd processes
-          shell: |
-            killall -9 etcd 2>/dev/null || true
-            sleep 1
-            ps aux | grep etcd | grep -v grep || echo "✓ etcd killado"
-          changed_when: false
-          ignore_errors: true
-
-        - name: Verify all processes are dead
-          shell: |
+            sudo pkill -9 jujud juju mongod 2>/dev/null || true
             sleep 2
-            if pgrep -f jujud > /dev/null; then
-              echo "❌ ERRO: jujud ainda está rodando!"
-              ps aux | grep jujud
-              exit 1
-            fi
-            echo "✓ Todos os processos Juju foram killados"
-          changed_when: false
+          changed_when: true
+          ignore_errors: true
 
-    tags: kill_processes
+        - name: Remove juju and juju-db snap packages
+          shell: |
+            sudo snap remove juju --purge 2>/dev/null || true
+            sudo snap remove juju-db --purge 2>/dev/null || true
+            sleep 5
+          changed_when: true
+          ignore_errors: true
 
-    # ============================================ 
+        - name: Remove juju data directories
+          shell: |
+            sudo rm -rf /var/lib/juju /var/run/juju /var/cache/juju /var/snap/juju* 2>/dev/null || true
+            rm -rf ~/.local/share/juju ~/.juju ~/.cache/juju 2>/dev/null || true
+          changed_when: true
+          ignore_errors: true
+
+                    - name: Verify no jujud processes are running after aggressive kill
+                      shell: |
+                        if pgrep -f "[j]ujud" > /dev/null; then
+                          echo "❌ ERRO: jujud ainda está rodando após pkill!"
+                          ps aux | grep "[j]ujud"
+                          exit 1
+                        fi
+                        echo "✓ Nenhum processo jujud rodando"
+                      changed_when: false      tags: kill_processes
+
+    # ============================================
     # 2. REMOVE JUJU SNAP
-    # ============================================ 
+    # ============================================
     - name: 🔴 PASSO 2 - Remove Juju Snap Package
       block:
         - name: Remove juju snap
@@ -122,12 +94,12 @@
             snap list 2>/dev/null | grep -q juju && \
               { echo "❌ ERRO: juju snap ainda está instalado!"; exit 1; } || \
                           echo "✓ Snap juju verificado como removido"
-                        changed_when: false
-                  tags: remove_snap
+            changed_when: false
+      tags: remove_snap
 
-    # ============================================ 
+    # ============================================
     # 3. REMOVE ALL JUJU DATA DIRECTORIES
-    # ============================================ 
+    # ============================================
     - name: 🔴 PASSO 3 - Remove Juju Data Directories
       block:
         - name: Remove /var/lib/juju
@@ -170,13 +142,13 @@
               ls -la /home/serpro/.local/share/juju 2>/dev/null || true
               exit 1
             fi
-                        echo "✓ Todos os diretórios de dados foram removidos"
-                      changed_when: false
-                tags: remove_data
+            echo "✓ Todos os diretórios de dados foram removidos"
+            changed_when: false
+      tags: remove_data
 
-    # ============================================ 
+    # ============================================
     # 4. CLEAN JUJU AGENT FILES
-    # ============================================ 
+    # ============================================
     - name: 🔴 PASSO 4 - Clean Juju Agent Files
       block:
         - name: Remove agent files
@@ -191,13 +163,13 @@
           shell: |
             rm -f /tmp/.juju* 2>&1 || true
             rm -f /var/run/juju* 2>&1 || true
-                        echo "✓ Sockets e locks removidos"
-                      changed_when: false
-                tags: clean_agent_files
+            echo "✓ Sockets e locks removidos"
+            changed_when: false
+      tags: clean_agent_files
 
-    # ============================================ 
+    # ============================================
     # 5. CLEAN CLOUD-INIT & SYSTEM
-    # ============================================ 
+    # ============================================
     - name: 🔴 PASSO 5 - Clean System
       block:
         - name: Clean cloud-init
@@ -210,14 +182,14 @@
           shell: |
             apt-get clean 2>&1 || true
             apt-get autoclean 2>&1 || true
-                        echo "✓ Cache de pacotes limpo"
-                      changed_when: false
-                tags: clean_system
-                  become: yes
+            echo "✓ Cache de pacotes limpo"
+            changed_when: false
+      tags: clean_system
+      become: yes
 
-    # ============================================ 
+    # ============================================
     # 6. VERIFY CLEAN STATE
-    # ============================================ 
+    # ============================================
     - name: 🟢 VERIFICAÇÃO FINAL - Estado Limpo
       block:
         - name: Verify no juju processes
@@ -265,7 +237,7 @@
               ║  Comando: ansible-playbook -i inventory playbooks/01-*.yml   ║
               ║                                                               
               ╚═══════════════════════════════════════════════════════════════╝
-    tags: verify_clean
+      tags: verify_clean
 
   post_tasks:
     - name: Generate cleanup report

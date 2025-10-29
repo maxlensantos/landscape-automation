@@ -1,7 +1,44 @@
 ---
 # Playbook Mestre: Reconstrução completa do ambiente de Teste
-# Este playbook primeiro destrói o ambiente existente e depois importa a macro
-# de implantação para criar um novo.
+# Este playbook primeiro executa uma limpeza nuclear em todos os nós,
+# e depois bootstraps um novo controller no ha-node-01 e adiciona o ha-node-02.
 
-- import_playbook: macro-destroy-total.yml
-- import_playbook: macro-deploy-test.yml
+- name: "Step 1: Perform Nuclear Cleanup on all hosts"
+  import_playbook: 99-cleanup-agents.yml
+
+- name: "Step 2: Bootstrap Juju controller on ha-node-01 (localhost)"
+  hosts: ha-node-01 # Target only ha-node-01 for bootstrap
+
+  gather_facts: no
+  vars:
+    controller_name: ha-controller-lxd # Using a new name to distinguish from manual cloud
+    model_name: default
+
+  tasks:
+    - name: "Bootstrap Juju controller on localhost"
+      ansible.builtin.shell: |
+        /snap/bin/juju bootstrap localhost {{ controller_name }} --config enable-os-refresh-update=false --config enable-os-upgrade=true
+      changed_when: true
+      environment:
+        JUJU_DATA: "{{ ansible_env.HOME }}/.local/share/juju"
+
+    - name: "Add default model to the new controller"
+      ansible.builtin.shell: |
+        /snap/bin/juju add-model {{ model_name }}
+      changed_when: true
+      environment:
+        JUJU_DATA: "{{ ansible_env.HOME }}/.local/share/juju"
+
+    - name: "Add ha-node-02 as a machine to the controller"
+      ansible.builtin.shell: |
+        /snap/bin/juju add-machine ssh:serpro@10.35.0.10
+      changed_when: true
+      environment:
+        JUJU_DATA: "{{ ansible_env.HOME }}/.local/share/juju"
+
+    - name: "Wait for machines to be ready"
+      ansible.builtin.shell: |
+        /snap/bin/juju wait -m {{ controller_name }}:{{ model_name }} -t 600s --for machine
+      changed_when: false
+      environment:
+        JUJU_DATA: "{{ ansible_env.HOME }}/.local/share/juju"

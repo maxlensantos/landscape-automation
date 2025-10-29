@@ -1,6 +1,6 @@
 --- 
 - name: Destroy Juju Model and Controller
-  hosts: "{{ groups['lxd_hosts'][0] }}"
+  hosts: "{{ groups['ha_nodes'][0] }}"
   gather_facts: no
   become: no
 
