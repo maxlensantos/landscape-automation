@@ -1,0 +1,66 @@
+---
+- name: '🔴 LIMPEZA NUCLEAR DEFINITIVA - Remove todos os vestígios do Juju'
+  hosts: ha_nodes
+  remote_user: serpro
+  become: yes
+  gather_facts: no
+
+  tasks:
+    - name: "PASSO 1: Finalizar processos Juju e Mongo (kill -9)"
+      ansible.builtin.shell: |
+        pkill -9 jujud || true
+        pkill -9 mongod || true
+      changed_when: false
+      ignore_errors: true
+
+    - name: "PASSO 2: Remover snaps do Juju com --purge"
+      ansible.builtin.shell: |
+        snap remove juju --purge || true
+        snap remove juju-db --purge || true
+      changed_when: false
+      ignore_errors: true
+
+    - name: "PASSO 3: Remover TODOS os diretórios de estado conhecidos"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/juju
+        - /var/snap/juju
+        - /var/log/juju
+        - /var/cache/juju
+        - /home/serpro/.local/share/juju
+        - /root/.local/share/juju
+        - /run/juju
+        - /run/snapd/lock/juju.lock
+      ignore_errors: true
+
+    - name: "PASSO 4: Remover arquivos de configuração residuais em /etc"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/apt/apt.conf.d/95-juju-proxy-settings
+        - /etc/sudoers.d/90-juju-ubuntu
+        - /etc/profile.d/juju-proxy.sh
+        - /etc/profile.d/juju-introspection.sh
+        - /etc/juju-proxy.conf
+        - /etc/juju-proxy-systemd.conf
+      ignore_errors: true
+
+    - name: "PASSO 5: Limpar cloud-init"
+      ansible.builtin.command: cloud-init clean --logs --seed
+      changed_when: false
+      ignore_errors: true
+
+    - name: "PASSO 6: Regenerar o machine-id para forçar uma nova identidade"
+      ansible.builtin.shell: |
+        rm -f /etc/machine-id
+        systemd-machine-id-setup
+      changed_when: true
+
+    - name: "PASSO 7: Reinstalar Juju para deixar o nó pronto"
+      ansible.builtin.snap:
+        name: juju
+        classic: yes
+        state: present

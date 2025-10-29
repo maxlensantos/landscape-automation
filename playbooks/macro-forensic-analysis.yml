@@ -1,0 +1,33 @@
+---
+- name: "FASE 1: Executar Limpeza Nuclear"
+  import_playbook: 99-cleanup-agents-NUCLEAR.yml
+
+- name: '🔬 FASE 2: Análise Forense Pós-Limpeza'
+  hosts: ha_nodes
+  remote_user: serpro
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: "--- ANÁLISE FORENSE: BUSCANDO ARQUIVOS JUJU REMANESCENTES ---"
+      ansible.builtin.debug:
+        msg: "Iniciando busca profunda por arquivos com 'juju' no nome. Isso pode levar um minuto..."
+
+    - name: "Executar 'find' em todo o sistema"
+      ansible.builtin.shell: "find / -name '*juju*' 2>/dev/null"
+      register: find_results
+      changed_when: false
+      ignore_errors: true
+
+    - name: "RELATÓRIO FORENSE: Arquivos encontrados em {{ inventory_hostname }}"
+      ansible.builtin.debug:
+        msg: |
+          ################################################################
+          # RELATÓRIO DE ARQUIVOS REMANESCENTES
+          # HOST: {{ inventory_hostname }}
+          ################################################################
+          {% if find_results.stdout_lines | length > 0 %}
+          {{ find_results.stdout_lines | join('\n') }}
+          {% else %}
+          Nenhum arquivo ou diretório com 'juju' no nome foi encontrado.
+          {% endif %}
+          ################################################################

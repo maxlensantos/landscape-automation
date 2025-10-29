@@ -83,6 +83,36 @@ destroy_environment() {
 
 
 # --- Main Menu Loop ---
+
+verify_juju_version() {
+    echo -e "${BLUE}--- Verificando a versão do Juju ---${NC}"
+    # Check if juju is installed
+    if ! command -v juju &> /dev/null; then
+        echo -e "${RED}ERRO: O comando 'juju' não foi encontrado.${NC}"
+        echo -e "${YELLOW}Por favor, instale o Juju com o comando:${NC}"
+        echo "sudo snap install juju --classic --channel=3.5/stable"
+        exit 1
+    fi
+
+    JUJU_VERSION=$(juju version)
+    
+    # Check if the version string contains "3.5."
+    if [[ "$JUJU_VERSION" == *"3.5."* ]]; then
+        echo -e "${GREEN}Versão do Juju ($JUJU_VERSION) é compatível.${NC}"
+    else
+        echo -e "${RED}ERRO: Versão incompatível do Juju detectada: $JUJU_VERSION${NC}"
+        echo -e "${YELLOW}Esta automação requer Juju da série 3.5.x para funcionar corretamente.${NC}"
+        echo -e "${YELLOW}Por favor, corrija a versão com os seguintes comandos:${NC}"
+        echo "1. sudo snap remove --purge juju"
+        echo "2. sudo snap install juju --classic --channel=3.5/stable"
+        exit 1
+    fi
+    echo "" # Add a newline for better formatting
+}
+
+# --- Main Execution ---
+verify_juju_version
+
 while true; do
     clear
     echo -e "${BLUE}===================================================${NC}"

@@ -1,0 +1,64 @@
+---
+- name: '🚀 Bootstrap Juju Controller (Executando Localmente)'
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars:
+    controller_name: "ha-controller"
+    bootstrap_node_ip: "10.35.0.10" # Target ha-node-02
+    second_node_ip: "10.35.0.9"
+    juju_user: "serpro"
+
+  tasks:
+    - name: "Verificar se o cliente Juju local está instalado"
+      ansible.builtin.command: "juju version"
+      changed_when: false
+
+    - name: "Limpar registros de controllers e clouds locais antigos"
+      ansible.builtin.shell: |
+        juju unregister -y {{ controller_name }} 2>/dev/null || true
+      changed_when: false
+
+    - name: "Garantir que a nuvem manual existe no clouds.yaml"
+      ansible.builtin.copy:
+        dest: "{{ lookup('env', 'HOME') }}/.local/share/juju/clouds.yaml"
+        content: |
+          clouds:
+            manual-ha:
+              type: manual
+        mode: '0644'
+
+    - name: "[BOOTSTRAP] Executar bootstrap remoto no ha-node-02"
+      ansible.builtin.shell: >-
+        juju bootstrap manual-ha {{ controller_name }} --bootstrap-target={{ juju_user }}@{{ bootstrap_node_ip }}
+        --constraints "mem=4G cores=2"
+      register: bootstrap_result
+      changed_when: "'Bootstrap complete' in bootstrap_result.stdout"
+      timeout: 900
+
+    - name: "Aguardar 15 segundos para o controller estabilizar"
+      ansible.builtin.pause:
+        seconds: 15
+
+    - name: "[HA] Adicionar ha-node-01 ao controller"
+      ansible.builtin.command: >-
+        juju add-machine ssh:{{ juju_user }}@{{ second_node_ip }} -m {{ controller_name }}:controller
+      register: add_machine_result
+      changed_when: "'created machine' in add_machine_result.stdout"
+      timeout: 600
+
+    - name: "Verificar o estado das máquinas do controller"
+      ansible.builtin.command: "juju machines -m {{ controller_name }}:controller"
+      register: machines_status
+      changed_when: false
+      until: "'started' in machines_status.stdout and machines_status.stdout.count('started') == 2"
+      retries: 10
+      delay: 15
+
+    - name: "SUCESSO: Cluster de controller HA está pronto"
+      ansible.builtin.debug:
+        msg: |
+          ✅ Controller '{{ controller_name }}' está no ar com 2 máquinas.
+          Saída:
+          {{ machines_status.stdout }}

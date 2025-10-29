@@ -1,70 +1,12 @@
 ---
-# playbooks/macro-rebuild-test-CORRECTED.yml
-#
-# MACRO PLAYBOOK: Reconstrução Completa do Ambiente Landscape HA
-# 
-# Esta é a sequência CORRIGIDA que funciona com Manual Cloud (2 nós)
-# 
-# ORDEM CRÍTICA:
-# 1. Destruir ambiente antigo
-# 2. Preparar nós
-# 3. Bootstrap Juju
-# 4. Adicionar machine-1 (HA)
-# 5. Pré-provisionar LXC machines
-# 6. DEPLOY INDIVIDUAL (novo approach)
-# 7. Escalar para HA
-# 8. Verificar saúde
-#
-# TEMPO TOTAL: ~60-90 minutos (primeira vez)
-
-- name: "[DESTROY] Fase 1 - Destruir Ambiente Anterior"
-  import_playbook: macro-destroy-total.yml
-  tags:
-    - destroy
-    - full
-
-- name: "[PREPARE] Fase 2 - Preparar Nós do Host"
-  import_playbook: 00-prepare-host-nodes.yml
+- name: "[PREPARE] Fase 1 - Preparar Nós Remotos (Limpeza Nuclear)"
+  import_playbook: 00-prepare-nodes.yml
   tags:
     - prepare
     - full
 
-- name: "[BOOTSTRAP] Fase 3 - Bootstrap Juju Controller (Manual Cloud)"
-  import_playbook: 01-bootstrap-juju-manual-FIXED.yml
+- name: "[BOOTSTRAP] Fase 2 - Bootstrap do Controller (Execução Local)"
+  import_playbook: 01-bootstrap-controller.yml
   tags:
     - bootstrap
     - full
-
-- name: "[MACHINES] Fase 4 - Adicionar Machine-1 para HA"
-  import_playbook: 04-add-machines-ha.yml
-  tags:
-    - machines
-    - ha
-    - full
-
-- name: "[LXC] Fase 5 - Pré-Provisionar Máquinas LXC (6 no total)"
-  import_playbook: 02-add-lxc-machines.yml
-  tags:
-    - lxc
-    - machines
-    - full
-
-- name: "[DEPLOY] Fase 6 - Deploy Individual de Charms (NOVO)"
-  import_playbook: 03-deploy-individual-corrected.yml
-  tags:
-    - deploy
-    - full
-
-- name: "[HEALTH] Fase 7 - Verificar Saúde do Modelo"
-  import_playbook: 98-verify-health.yml
-  tags:
-    - health
-    - verify
-    - full
-
-- name: "[PROXY] Fase 8 - Expor HAProxy (Multipass/Lab)"
-  import_playbook: 05-configure-haproxy-nat.yml
-  tags:
-    - proxy
-    - expose
-    - optional

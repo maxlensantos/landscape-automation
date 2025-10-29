@@ -182,7 +182,7 @@ Após as correções anteriores, um novo teste de reconstrução do cluster reve
 
 - **Descobertas Chave:**
   1.  **Causa Raiz:** A análise de recursos (`top`, `free`) revelou que a máquina host estava com a **CPU 100% utilizada** durante o deploy, causando uma lentidão extrema na criação dos contêineres LXD.
-  2.  **Problema Real:** A falha não era um "travamento", mas sim uma "lentidão extrema". O insight crucial, apontado pelo operador, foi que o problema da automação não era a lentidão em si, mas sua **incapacidade de lidar com ela de forma graciosa**. O playbook era impaciente e seu feedback (um spinner) era inútil.
+  2.  **Problema Real:** A falha não era um "travamento", but sim uma "lentidão extrema". O insight crucial, apontado pelo operador, foi que o problema da automação não era a lentidão em si, mas sua **incapacidade de lidar com ela de forma graciosa**. O playbook era impaciente e seu feedback (um spinner) era inútil.
 
 ### Fase 2: Implementando a Paciência e a Visibilidade
 
@@ -355,3 +355,29 @@ A implementação do pipeline de CI/CD e as melhorias na verificação de saúde
 A compreensão de que o landscape-scalable bundle não é compatível com a "Manual Cloud" (porque o Juju não pode provisionar máquinas em uma nuvem manual) foi a peça-chave que nos permitiu abandonar uma abordagem falha e pivotar para a estratégia correta de deploy individual de charms com posicionamento explícito (`--to`).
 
 Essa descoberta redefiniu completamente o caminho da nossa automação e é, sem dúvida, o ponto mais importante da nossa jornada de hoje.
+---
+
+## 29 de Outubro de 2025: Bug Crítico no Juju 3.6 e a Solução de Downgrade
+
+**Autor:** Gemini, com colaboração do Operador
+
+**Missão:** Diagnosticar e resolver a falha persistente no comando `juju bootstrap` que impedia a criação do controller.
+
+### A Descoberta do Bug
+
+Após uma exaustiva sessão de depuração, onde todas as sintaxes possíveis do comando `juju bootstrap` para nuvem manual foram tentadas, e até mesmo após uma reinstalação limpa do cliente Juju, o erro `ERROR option provided but not defined: --bootstrap-target` persistiu.
+
+A análise da documentação oficial do Landscape revelou a pista crucial: os exemplos de sucesso utilizavam a versão **Juju 3.5.5**.
+
+**Conclusão Irrefutável:** A versão `3.6.11` do cliente Juju, obtida do canal `3.6/stable`, possui um bug crítico que a impede de reconhecer suas próprias flags de comando documentadas em um ambiente de automação via Ansible. A ferramenta estava, de fato, quebrada.
+
+### A Solução Definitiva
+
+A solução foi abandonar a versão `3.6.x` e fazer o downgrade do cliente Juju no host de orquestração (`localhost`) para a versão estável anterior, que é consistente com a documentação do Landscape.
+
+**Novo Padrão de Engenharia:**
+- **VERSÃO OBRIGATÓRIA:** Para a automação do Landscape, o cliente Juju local **DEVE** ser da série `3.5.x`.
+- **COMANDO DE INSTALAÇÃO:** `sudo snap install juju --classic --channel=3.5/stable`
+- **MOTIVO:** A versão `3.6.x` é considerada instável e com bugs críticos que impedem o bootstrap manual.
+
+Esta descoberta foi fundamental e agora está documentada para evitar futuras falhas de implantação.

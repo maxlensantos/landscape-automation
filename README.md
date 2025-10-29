@@ -1,3 +1,18 @@
+> [!IMPORTANT]
+> ## Pré-requisitos Críticos
+> 
+> ### Versão do Juju
+> 
+> Esta automação **exige** que o cliente Juju instalado na máquina de orquestração (localhost) seja da série **`3.5.x`**.
+> 
+> **Motivo:** Foi identificado um bug crítico na versão `3.6.x` que a impede de funcionar corretamente com nuvens manuais, causando falhas no bootstrap.
+> 
+> **Comando para Instalação/Correção:**
+> ```bash
+> sudo snap install juju --classic --channel=3.5/stable
+> ```
+> O script `setup.sh` irá validar a versão antes de executar.
+
 # Automação de Implantação do Canonical Landscape
 
 Este projeto contém um conjunto de playbooks Ansible para automatizar a implantação do Canonical Landscape de forma robusta, flexível e resiliente, utilizando as melhores práticas de Infraestrutura como Código.

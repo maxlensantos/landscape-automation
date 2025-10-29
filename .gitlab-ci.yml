@@ -22,6 +22,9 @@ variables:
     # Prepara o arquivo de senha do Vault para uso não-interativo
     - echo "$ANSIBLE_VAULT_PASSWORD" > .vault_pass.tmp
     - export VAULT_PASS_FILE=.vault_pass.tmp
+    # Garante a versão correta do Juju
+    - snap remove --purge juju || true
+    - snap install juju --classic --channel=3.5/stable
     # Inicializa o ambiente LXD/Juju
     - lxd init --auto --storage-backend dir
     - usermod -a -G lxd gitlab-runner
@@ -91,7 +94,7 @@ cleanup_final:
   image: ubuntu:22.04
   script:
     - apt-get update -qq && apt-get install -y snapd jq
-    - snap install juju --classic || true # Instala juju se não estiver presente
+    - snap install juju --classic --channel=3.5/stable || true # Instala juju se não estiver presente
     - snap install lxd || true # Instala lxd se não estiver presente
     - lxd init --auto --storage-backend dir || true
     - usermod -a -G lxd gitlab-runner || true
