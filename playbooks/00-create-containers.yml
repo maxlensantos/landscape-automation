@@ -1,0 +1,117 @@
+---
+- name: "Criar containers LXD com SSH para ansible_user"
+  hosts: localhost
+  gather_facts: yes
+  tasks:
+
+    - name: "Deletar containers antigos se existirem"
+      ansible.builtin.shell: |
+        lxc delete ha-node-01 --force 2>/dev/null || true
+        lxc delete ha-node-02 --force 2>/dev/null || true
+      become: yes
+      changed_when: false
+
+    - name: "Criar container ha-node-01"
+      ansible.builtin.shell: lxc launch ubuntu:22.04 ha-node-01
+      become: yes
+
+    - name: "Criar container ha-node-02"
+      ansible.builtin.shell: lxc launch ubuntu:22.04 ha-node-02
+      become: yes
+
+    - name: "Aguardar que containers estejam prontos (60s)"
+      ansible.builtin.pause:
+        seconds: 60
+
+    - name: "Criar rede LXD interna"
+      ansible.builtin.shell: |
+        lxc network show lxdbr0 >/dev/null 2>&1 || \
+        lxc network create lxdbr0 ipv4.address=192.168.1.1/24 ipv4.nat=true
+      become: yes
+      changed_when: false
+
+    - name: "Configurar perfil default para usar lxdbr0"
+      ansible.builtin.shell: |
+        lxc profile device set default eth0 network lxdbr0
+      become: yes
+      changed_when: false
+      ignore_errors: true
+
+    - name: "Instalar SSH e sudo nos containers"
+      ansible.builtin.shell: |
+        lxc exec {{ item }} -- apt update -y
+        lxc exec {{ item }} -- apt install -y openssh-server sudo
+      become: yes
+      loop:
+        - ha-node-01
+        - ha-node-02
+
+    - name: "Criar usuário ansible_user em ha-node-01"
+      ansible.builtin.shell: |
+        lxc exec ha-node-01 -- bash << 'EOF'
+        useradd -m -s /bin/bash ansible_user
+        usermod -aG sudo ansible_user
+        mkdir -p /home/ansible_user/.ssh
+        chmod 700 /home/ansible_user/.ssh
+        chown ansible_user:ansible_user /home/ansible_user/.ssh
+        EOF
+      become: yes
+
+    - name: "Criar usuário ansible_user em ha-node-02"
+      ansible.builtin.shell: |
+        lxc exec ha-node-02 -- bash << 'EOF'
+        useradd -m -s /bin/bash ansible_user
+        usermod -aG sudo ansible_user
+        mkdir -p /home/ansible_user/.ssh
+        chmod 700 /home/ansible_user/.ssh
+        chown ansible_user:ansible_user /home/ansible_user/.ssh
+        EOF
+      become: yes
+
+    - name: "Injetar chave SSH pública do usuário para ansible_user nos containers"
+      ansible.builtin.shell: "lxc file push {{ lookup('env', 'HOME') }}/.ssh/id_ed25519.pub {{ item }}/home/ansible_user/.ssh/authorized_keys --create-dirs --mode=0600"
+      become: yes
+      loop:
+        - ha-node-01
+        - ha-node-02
+
+    - name: "Ajustar permissões do diretório .ssh para ansible_user"
+      ansible.builtin.shell: "lxc exec {{ item }} -- chmod 700 /home/ansible_user/.ssh"
+      become: yes
+      loop:
+        - ha-node-01
+        - ha-node-02
+
+    - name: "Reiniciar serviço SSH nos containers"
+      ansible.builtin.shell: "lxc exec {{ item }} -- systemctl restart sshd"
+      become: yes
+      loop:
+        - ha-node-01
+        - ha-node-02
+
+    - name: "Obter IPs dos containers"
+      ansible.builtin.shell: |
+        lxc list --format=csv -c n,4 | grep ha-node | awk -F',' '{print $1" "$2}'
+      become: yes
+      register: containers_ips
+      changed_when: false
+
+    - name: "Exibir IPs dos containers"
+      ansible.builtin.debug:
+        msg: "{{ containers_ips.stdout_lines }}"
+
+    - name: "Gerar inventário dinâmico com ansible_user"
+      ansible.builtin.template:
+        src: inventory_template.j2
+        dest: "{{ playbook_dir }}/../inventory/ha-test.ini"
+      vars:
+        containers_list: "{{ containers_ips.stdout_lines }}"
+
+    - name: "Exibir inventário gerado"
+      ansible.builtin.slurp:
+        src: "{{ playbook_dir }}/../inventory/ha-test.ini"
+      register: inventory_content
+
+    - name: "Mostrar conteúdo do inventário"
+      ansible.builtin.debug:
+        msg: "{{ inventory_content['content'] | b64decode }}"

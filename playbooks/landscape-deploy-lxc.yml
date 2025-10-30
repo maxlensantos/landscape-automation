@@ -1,0 +1,111 @@
+---
+- name: "Deploy Landscape Server - Instalação Simples"
+  hosts: localhost
+  gather_facts: yes
+  vars:
+    landscape_hostname: "landscap"
+    landscape_domain: "poc.serpro"
+  tasks:
+
+    - name: "Deletar container landscape antigo"
+      ansible.builtin.shell: |
+        sudo lxc delete landscape --force 2>/dev/null || true
+      become: no
+      changed_when: false
+
+    - name: "Aguardar antes de criar novo container"
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: "Criar container Ubuntu 24.04 limpo"
+      ansible.builtin.shell: |
+        sudo lxc launch ubuntu:24.04 landscape
+      become: no
+
+    - name: "Aguardar container iniciar"
+      ansible.builtin.pause:
+        seconds: 30
+
+    - name: "Atualizar packages"
+      ansible.builtin.shell: |
+        sudo lxc exec landscape -- apt update && apt upgrade -y
+      become: no
+
+    - name: "Instalar Landscape Server e dependências"
+      ansible.builtin.shell: |
+        sudo lxc exec landscape -- apt install -y landscape-server postgresql postgresql-contrib
+      become: no
+
+    - name: "Iniciar serviços"
+      ansible.builtin.shell: |
+        sudo lxc exec landscape -- systemctl start landscape-server
+        sudo lxc exec landscape -- systemctl start postgresql
+      become: no
+
+    - name: "Obter IP do container"
+      ansible.builtin.shell: |
+        sudo lxc list landscape --format csv -c 4 | head -1
+      become: no
+      register: landscape_ip
+      changed_when: false
+
+    - name: "Configurar port forwarding (6554, 443, 80)"
+      ansible.builtin.shell: |
+        LANDSCAPE_IP="{{ landscape_ip.stdout }}"
+        
+        # Remove existing proxies
+        for PORT in 6554 443 80; do
+          sudo lxc config device remove landscape tcp${PORT}proxyv4 2>/dev/null || true
+        done
+        
+        # Add new proxies
+        for PORT in 6554 443 80; do
+          sudo lxc config device add landscape tcp${PORT}proxyv4 \
+            proxy listen=tcp:0.0.0.0:${PORT} connect=tcp:${LANDSCAPE_IP}:${PORT}
+        done
+      become: no
+
+    - name: "Verificar status"
+      ansible.builtin.shell: |
+        sudo lxc exec landscape -- systemctl status landscape-server --no-pager | head -5
+        echo "---"
+        sudo lxc exec landscape -- systemctl status postgresql --no-pager | head -5
+      become: no
+      register: status_result
+      ignore_errors: true
+
+    - name: "Exibir Status"
+      ansible.builtin.debug:
+        msg: "{{ status_result.stdout_lines }}"
+
+    - name: "Exibir Informações de Acesso"
+      ansible.builtin.debug:
+        msg: |
+          
+          ✅ LANDSCAPE SERVER DEPLOYADO COM SUCESSO!
+          
+          IP do Container: {{ landscape_ip.stdout }}
+          
+          Acesso:
+          ========
+          1. WebUI (local):   http://localhost:6554
+          2. WebUI (IP):      http://{{ landscape_ip.stdout }}:6554
+          3. WebUI (FQDN):    http://{{ landscape_hostname }}.{{ landscape_domain }}:6554
+          4. SSH container:   sudo lxc exec landscape -- bash
+          
+          LOGS:
+          =====
+          - Landscape:   sudo lxc exec landscape -- tail -f /var/log/landscape/django.log
+          - PostgreSQL:  sudo lxc exec landscape -- tail -f /var/log/postgresql/*.log
+          - Cloud-init:  sudo lxc exec landscape -- tail -f /var/log/cloud-init-output.log
+          
+          PRÓXIMOS PASSOS:
+          ================
+          1. Abra http://localhost:6554 no browser
+          2. Configure admin user
+          3. Adicione máquinas para monitorar
+          
+          Port Forwarding Ativo:
+          - Local 6554  -> Container 6554
+          - Local 443   -> Container 443
+          - Local 80    -> Container 80

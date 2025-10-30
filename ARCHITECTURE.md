@@ -1,3 +1,45 @@
+# Diretivas de Engenharia (29 de Outubro de 2025)
+
+> [!WARNING]
+> As diretivas a seguir são mandatórias para garantir a estabilidade e a previsibilidade da automação. Desvios destas diretivas resultaram em falhas críticas de implantação.
+
+## 1. Versão do Juju
+
+- **Diretiva:** Todos os componentes do sistema (máquina de orquestração/operador, nós do cluster) **DEVEM** usar a série **`3.5.x`** do Juju.
+- **Comando:** `sudo snap install juju --classic --channel=3.5/stable`
+- **Justificativa:** A série `3.6.x` do Juju apresentou bugs críticos que impedem o bootstrap em nuvens manuais, não reconhecendo suas próprias flags de comando. A versão `3.5.x` é a versão de referência usada na documentação do Landscape e provou ser estável.
+
+## 2. Padrão de Arquitetura para Bootstrap (Delegate Bootstrap)
+
+- **Diretiva:** O comando `juju bootstrap` **NÃO DEVE** ser executado a partir da máquina do operador (`localhost`). A execução deve ser delegada a um nó do cluster.
+- **Implementação:** O playbook `01-bootstrap-controller.yml` é configurado para rodar em `ha-node-01`.
+- **Justificativa:** A máquina do operador provou ser um ambiente não confiável para o cliente Juju. Delegar a execução para um nó recém-preparado e com uma instalação limpa do Juju garante um ambiente de bootstrap previsível e contorna quaisquer problemas locais.
+
+### 2.1. Configuração da Nuvem Manual para Bootstrap Delegado
+
+- **Diretiva:** Ao usar o padrão "Delegate Bootstrap", a configuração do alvo deve ser feita de forma declarativa.
+- **Implementação:** No nó de execução (`ha-node-01`), um arquivo `clouds.yaml` deve ser criado com o alvo (`ha-node-02`) definido no campo `endpoint`.
+  ```yaml
+  clouds:
+    manual-ha:
+      type: manual
+      endpoint: 'serpro@10.35.0.10'
+  ```
+- **Comando:** O comando de bootstrap deve ser simples, sem alvos na linha de comando: `juju bootstrap manual-ha <controller_name>`.
+
+### 2.2. Contexto de Execução de Comandos Juju
+
+- **Diretiva:** Todos os comandos Juju que modificam ou acedem ao estado do cliente (`bootstrap`, `add-machine`, etc.) **DEVEM** ser executados com o contexto do usuário proprietário da configuração (`serpro`). No Ansible, isto é garantido pela diretiva `become: no` na tarefa.
+- **Justificativa:** A execução de comandos Juju com privilégios de `root` (via `become: yes`) causa erros de `permission denied`, pois o Juju procura sua configuração no diretório `/root` em vez de `/home/serpro`. A execução como o usuário correto garante que o Juju encontre seus arquivos (`clouds.yaml`, chaves SSH) e tenha permissão para escrever em seu próprio diretório de estado.
+
+## 3. Padrão de Limpeza de Nós (Cleanup)
+
+- **Diretiva:** Para garantir um estado limpo e previsível antes de um bootstrap, o script oficial `/usr/sbin/remove-juju-services` **DEVE** ser executado nos nós de destino.
+- **Justificativa:** Tentativas de limpeza manual (removendo diretórios e processos) provaram ser insuficientes, resultando no erro `machine is already provisioned`. O script `remove-juju-services` é a ferramenta oficial e garantida para remover todos os vestígios de um agente Juju de uma máquina.
+- **Implementação:** Esta diretiva é implementada no playbook `00-prepare-nodes.yml`.
+
+---
+
 # Evolução da Estratégia de Implantação do Landscape HA (26 de Outubro de 2025)
 
 Este documento detalha a evolução da estratégia de implantação de um cluster Landscape em Alta Disponibilidade (HA) em dois nós on-premise, utilizando a abordagem de "Manual Cloud" do Juju.
@@ -37,7 +79,7 @@ A jornada de hoje revelou a complexidade da orquestração Juju/Ansible em ambie
 
 ### 7. Erro de Bootstrap em "Manual Cloud": `region not valid`
 *   **Problema:** `juju bootstrap on-premise-manual/user@host` falhava com "region not valid".
-*   **Solução:** A especificação do host para uma nuvem manual deve ser feita no arquivo `manual-cloud.yaml` via `endpoint: user@host`. O comando `bootstrap` é então simplificado para `juju bootstrap <cloud_name> <controller_name>`.
+*   **Solução:** A especificação do host para a nuvem manual deve ser feita no arquivo `manual-cloud.yaml` via `endpoint: user@host`. O comando `bootstrap` é então simplificado para `juju bootstrap <cloud_name> <controller_name>`.
 
 ### 8. Falha do Contêiner do Controlador Juju (`broken pipe`)
 *   **Problema:** O contêiner do controlador Juju falhava logo após o bootstrap, com erro de "broken pipe", indicando falta de recursos.

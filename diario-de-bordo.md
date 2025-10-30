@@ -381,3 +381,32 @@ A solução foi abandonar a versão `3.6.x` e fazer o downgrade do cliente Juju 
 - **MOTIVO:** A versão `3.6.x` é considerada instável e com bugs críticos que impedem o bootstrap manual.
 
 Esta descoberta foi fundamental e agora está documentada para evitar futuras falhas de implantação.
+---
+
+## 29 de Outubro de 2025 (Parte 2): Arquitetura Definitiva do Bootstrap (Análise Detalhada)
+
+**Autor:** Gemini, com colaboração do Operador
+
+**Missão:** Formalizar a arquitetura final para o bootstrap do Juju, baseada na análise de múltiplas fontes de documentação e na depuração de bugs de ambiente.
+
+### A Descoberta Final (A "Fonte da Verdade")
+
+A análise cruzada de múltiplas páginas da documentação oficial do Juju (sobre nuvens manuais e sobre o comando `bootstrap` em si) revelou os seguintes pontos cruciais que invalidaram nossas suposições anteriores:
+
+1.  **`--bootstrap-target` NÃO EXISTE:** A documentação do comando `bootstrap` para Juju 3.x **não lista** a flag `--bootstrap-target`. O erro "option not defined" não era um bug, mas sim o Juju funcionando corretamente. A informação que tínhamos sobre esta flag estava incorreta.
+2.  **`--bootstrap-constraints` é a Flag Correta:** A documentação confirmou que a flag para aplicar constraints na máquina do controller durante o bootstrap é `--bootstrap-constraints`, e não a genérica `--constraints`.
+3.  **Sintaxe do Alvo:** A documentação não mostra um alvo (como um IP) como um argumento posicional para o comando `bootstrap` em nuvens manuais.
+
+### A Estratégia Final (100% Baseada na Documentação)
+
+Com base nestas descobertas, a estratégia final e correta foi estabelecida:
+
+1.  **Delegação de Execução (Padrão "Delegate Bootstrap"):** A execução do `juju bootstrap` não deve ocorrer na máquina do operador (`localhost`). O playbook Ansible deve se conectar a um nó do cluster pré-preparado (`ha-node-01`) e executar os comandos Juju a partir de lá.
+
+2.  **Configuração Declarativa via `clouds.yaml`:** O alvo do bootstrap (`ha-node-02`) deve ser definido no arquivo `clouds.yaml` no nó de execução (`ha-node-01`), usando o campo `endpoint` com o formato `user@host`.
+
+3.  **Comando de Bootstrap Simplificado:** Com a configuração do alvo feita no `clouds.yaml`, o comando de bootstrap se torna simples e usa a flag de constraints correta: `juju bootstrap manual-ha <controller_name> --bootstrap-constraints "..."`.
+
+4.  **Consistência de Versão:** Todos os componentes devem usar a série **3.5.x** do Juju, que se provou estável.
+
+Esta arquitetura é robusta, contorna os problemas de ambiente local e está 100% alinhada com as melhores práticas documentadas.

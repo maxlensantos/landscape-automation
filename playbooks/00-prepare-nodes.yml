@@ -6,14 +6,17 @@
   gather_facts: no
 
   tasks:
-    - name: "PASSO 1: Finalizar processos Juju e Mongo (kill -9)"
-      ansible.builtin.shell: |
-        pkill -9 jujud || true
-        pkill -9 mongod || true
+    - name: "PASSO 0: Forçar a remoção de todos os contêineres LXD existentes"
+      ansible.builtin.shell: "lxc list --format=csv -c n | xargs -r lxc delete --force || true"
       changed_when: false
       ignore_errors: true
 
-    - name: "PASSO 2: Remover snaps do Juju com --purge"
+    - name: "PASSO 1: Executar script de limpeza oficial do Juju"
+      ansible.builtin.command: /usr/sbin/remove-juju-services
+      changed_when: true
+      ignore_errors: true
+
+    - name: "PASSO 2: Remover snaps do Juju com --purge (redundante, mas seguro)"
       ansible.builtin.shell: |
         snap remove juju --purge || true
         snap remove juju-db --purge || true
@@ -59,8 +62,45 @@
         systemd-machine-id-setup
       changed_when: true
 
-    - name: "PASSO 7: Reinstalar Juju para deixar o nó pronto"
+    - name: "PASSO 7: Reinstalar Juju para deixar o nó pronto (versão 3.5.x)"
       ansible.builtin.snap:
         name: juju
         classic: yes
         state: present
+        channel: 3.5/stable
+
+    - name: "PASSO 8: Instalar LXD se não estiver presente"
+      ansible.builtin.snap:
+        name: lxd
+        state: present
+
+    - name: "PASSO 9: Inicializar LXD se necessário"
+      ansible.builtin.command: lxd init --auto
+      changed_when: true
+      ignore_errors: true # Will fail if already initialized, which is ok
+
+    - name: "PASSO 10: Garantir que a rede interna LXD (lxdbr0) existe"
+      ansible.builtin.shell: |
+        lxc network show lxdbr0 >/dev/null 2>&1 || \
+        lxc network create lxdbr0 ipv4.address=192.168.1.1/24 ipv4.nat=true
+      become: yes
+      changed_when: false
+      ignore_errors: true
+
+    - name: "PASSO 11: Configurar perfil default do LXD para usar a rede lxdbr0"
+      ansible.builtin.shell: |
+        lxc profile device set default eth0 network lxdbr0
+      become: yes
+      changed_when: false
+      ignore_errors: true
+
+    - name: "PASSO 12: Instalar Ansible via apt"
+      ansible.builtin.apt:
+        name: ansible
+        state: present
+        update_cache: yes
+      become: yes
+      retries: 3
+      delay: 5
+      register: ansible_install
+      until: ansible_install is succeeded

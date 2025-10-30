@@ -1,60 +1,90 @@
 ---
-- name: '🚀 Bootstrap Juju Controller (Executando Localmente)'
-  hosts: localhost
-  connection: local
-  gather_facts: no
+- name: '🚀 Bootstrap Juju Controller (Executando via ha-node-01)'
+  hosts: ha-node-01
+  gather_facts: true
+  remote_user: serpro
+  become: yes
 
   vars:
     controller_name: "ha-controller"
     bootstrap_node_ip: "10.35.0.10" # Target ha-node-02
-    second_node_ip: "10.35.0.9"
+    second_node_ip: "10.35.0.9" # This node, ha-node-01
     juju_user: "serpro"
 
   tasks:
-    - name: "Verificar se o cliente Juju local está instalado"
-      ansible.builtin.command: "juju version"
-      changed_when: false
-
-    - name: "Limpar registros de controllers e clouds locais antigos"
+    - name: "Limpar registros de controllers e clouds remotos antigos"
       ansible.builtin.shell: |
         juju unregister -y {{ controller_name }} 2>/dev/null || true
       changed_when: false
+      ignore_errors: true
 
-    - name: "Garantir que a nuvem manual existe no clouds.yaml"
+    - name: "Garantir que o diretório de configuração do Juju existe"
+      ansible.builtin.file:
+        path: "/home/{{ juju_user }}/.local/share/juju"
+        state: directory
+        mode: '0755'
+      become: no
+
+    - name: "Garantir que a nuvem manual existe no clouds.yaml (com endpoint)"
       ansible.builtin.copy:
-        dest: "{{ lookup('env', 'HOME') }}/.local/share/juju/clouds.yaml"
+        dest: "/home/{{ juju_user }}/.local/share/juju/clouds.yaml"
         content: |
           clouds:
             manual-ha:
               type: manual
+              endpoint: '{{ juju_user }}@{{ bootstrap_node_ip }}'
         mode: '0644'
+      become: no
 
-    - name: "[BOOTSTRAP] Executar bootstrap remoto no ha-node-02"
+    - name: "[BOOTSTRAP] Executar bootstrap a partir do ha-node-01 para o ha-node-02"
       ansible.builtin.shell: >-
-        juju bootstrap manual-ha {{ controller_name }} --bootstrap-target={{ juju_user }}@{{ bootstrap_node_ip }}
-        --constraints "mem=4G cores=2"
+        juju bootstrap manual-ha {{ controller_name }} --bootstrap-constraints "mem=4G cores=2"
       register: bootstrap_result
       changed_when: "'Bootstrap complete' in bootstrap_result.stdout"
       timeout: 900
+      become: no
 
-    - name: "Aguardar 15 segundos para o controller estabilizar"
+    - name: "Aguardar 30 segundos para o controller estabilizar"
       ansible.builtin.pause:
-        seconds: 15
+        seconds: 30
 
-    - name: "[HA] Adicionar ha-node-01 ao controller"
+    - name: "[HA] Adicionar ha-node-01 como segundo controlador"
       ansible.builtin.command: >-
-        juju add-machine ssh:{{ juju_user }}@{{ second_node_ip }} -m {{ controller_name }}:controller
+        juju add-machine ssh:{{ juju_user }}@{{ second_node_ip }} --series=jammy -m {{ controller_name }}:controller
       register: add_machine_result
       changed_when: "'created machine' in add_machine_result.stdout"
       timeout: 600
+      become: no
 
-    - name: "Verificar o estado das máquinas do controller"
-      ansible.builtin.command: "juju machines -m {{ controller_name }}:controller"
+    - name: "[HA] Criar espaço de rede 'internal' para a sub-rede dos contêineres"
+      ansible.builtin.command: "juju add-space internal 192.168.1.0/24"
+      become: no
+      changed_when: true
+      ignore_errors: true # In case it already exists
+      environment:
+        JUJU_MODEL: "{{ controller_name }}:controller"
+
+    - name: "[HA] Configurar juju-ha-space para a rede interna"
+      ansible.builtin.command: "juju controller-config juju-ha-space=internal"
+      become: no
+      changed_when: true
+
+    - name: "[HA] Habilitar HA para os nós existentes"
+      ansible.builtin.command: "juju enable-ha"
+      become: no
+      changed_when: true
+      timeout: 900
+      environment:
+        JUJU_MODEL: "{{ controller_name }}:controller"
+
+    - name: "[HA] Garantir que as 2 máquinas são controllers HA"
+      ansible.builtin.command: "juju machines -m {{ controller_name }}:controller --format=json"
       register: machines_status
       changed_when: false
-      until: "'started' in machines_status.stdout and machines_status.stdout.count('started') == 2"
-      retries: 10
-      delay: 15
+      until: "(machines_status.stdout | from_json).machines | dict2items | selectattr('value.ha-status', 'equalto', 'has-vote') | list | length >= 2"
+      retries: 20
+      delay: 30
+      become: no
 
     - name: "SUCESSO: Cluster de controller HA está pronto"
       ansible.builtin.debug:
